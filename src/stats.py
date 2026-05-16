@@ -170,14 +170,17 @@ def compute_stats(
     sum_sq_c = torch.zeros(3, dtype=torch.float64)
     total_pixels = 0
 
-    for batch in tqdm(loader, desc="stats", unit="batch"):
-        if batch is None:
-            continue
-        batch = batch.to(config.DEVICE, non_blocking=True)
-        b, _, h, w = batch.shape
-        sum_c += batch.sum(dim=(0, 2, 3)).double().cpu()
-        sum_sq_c += (batch * batch).sum(dim=(0, 2, 3)).double().cpu()
-        total_pixels += b * h * w
+    with tqdm(total=len(files), desc="stats", unit="img") as pbar:
+        for batch in loader:
+            if batch is None:
+                continue
+            batch = batch.to(config.DEVICE, non_blocking=True)
+
+            b, _, h, w = batch.shape
+            sum_c += batch.sum(dim=(0, 2, 3)).double().cpu()
+            sum_sq_c += (batch * batch).sum(dim=(0, 2, 3)).double().cpu()
+            total_pixels += b * h * w
+            pbar.update(b)
 
     if total_pixels == 0:
         raise RuntimeError("no images decoded; cannot compute stats")
