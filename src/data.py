@@ -1,7 +1,8 @@
-"""JXL loading, transforms, and the rotation pair wrapper.
+"""Image loading, transforms, and the rotation pair wrapper.
 
-Source images are JPEG-XL (.jxl); pillow-jxl-plugin auto-registers a PIL handler
-on import so PIL.Image.open transparently decodes them.
+PIL is used for decoding; pillow-jxl-plugin auto-registers on import so
+PIL.Image.open transparently handles JPEG-XL alongside the formats PIL
+already supports.
 
 The training dataset is built from ImageNet + COCO. Each base image yields four
 training samples — one per rotation in {0, 90, 180, 270}. The sample index is
@@ -30,13 +31,19 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 log = logging.getLogger(__name__)
 
 
-def scan_jxl(roots: Sequence[Path]) -> list[Path]:
-    """Recursively gather every .jxl file under the given roots."""
+def scan_images(roots: Sequence[Path]) -> list[Path]:
+    """Recursively gather every regular file under the given roots.
+
+    No extension filter — the dataset directories are expected to contain only
+    images, and PIL will raise at load time on anything it can't decode.
+    """
     out: list[Path] = []
     for root in roots:
         if not root.exists():
             raise FileNotFoundError(root)
-        out.extend(root.rglob("*.jxl"))
+        for entry in root.rglob("*"):
+            if entry.is_file():
+                out.append(entry)
     return out
 
 
@@ -55,7 +62,7 @@ def load_or_build_index(
             return [Path(p) for p in json.load(f)]
 
     t0 = time.time()
-    files = scan_jxl(roots)
+    files = scan_images(roots)
     dt = time.time() - t0
     log.info("scanned %s: %d files in %.1fs", name, len(files), dt)
 
@@ -64,8 +71,8 @@ def load_or_build_index(
     return files
 
 
-class JxlImageList(Dataset):
-    """Returns PIL.Image (RGB) by index from a flat list of .jxl files."""
+class ImageList(Dataset):
+    """Returns PIL.Image (RGB) by index from a flat list of image files."""
 
     def __init__(self, files: list[Path]) -> None:
         self.files = files
@@ -84,7 +91,7 @@ class RotationPairDataset(Dataset):
     img_idx = i // 4 and rot_idx = i % 4. Rotation label is rot_idx.
     """
 
-    def __init__(self, base: JxlImageList, transform) -> None:
+    def __init__(self, base: ImageList, transform) -> None:
         self.base = base
         self.transform = transform
 
@@ -137,7 +144,7 @@ def build_train_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     for spec in datasets:
         files = load_or_build_index(f"train_{spec.name}", [spec.train])
         transform = build_train_transform(spec.mean, spec.std)
-        parts.append(RotationPairDataset(JxlImageList(files), transform))
+        parts.append(RotationPairDataset(ImageList(files), transform))
     return ConcatDataset(parts)
 
 
@@ -146,5 +153,5 @@ def build_val_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     for spec in datasets:
         files = load_or_build_index(f"val_{spec.name}", [spec.val])
         transform = build_eval_transform(spec.mean, spec.std)
-        parts.append(RotationPairDataset(JxlImageList(files), transform))
+        parts.append(RotationPairDataset(ImageList(files), transform))
     return ConcatDataset(parts)
