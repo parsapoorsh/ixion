@@ -12,7 +12,7 @@ import logging
 import torch
 
 import config
-from config import build_train_transform
+from builders import build_train_transform
 from utils.image_io import open_rgb
 from infer import predict_image
 from utils.logsetup import setup_logging

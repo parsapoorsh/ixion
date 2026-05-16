@@ -19,7 +19,7 @@ from torch import nn
 from torchvision.transforms import functional as TF
 
 import config
-from config import build_eval_transform
+from builders import build_eval_transform
 
 
 @dataclass
