@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainConfig:
-    epochs: int = 8
+    epochs: int = 100
     batch_size: int = 128
     num_workers: int = 12
     lr: float = 1e-3
     weight_decay: float = 0.05
     label_smoothing: float = 0.1
-    warmup_steps: int = 500
+    warmup_epochs: int = 5
     grad_clip: float = 1.0
     ema_decay: float = 0.9999
     log_every: int = 50
@@ -152,7 +152,11 @@ def train_one_run(cfg: TrainConfig) -> None:
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * cfg.epochs
-    logger.info("%d epochs x %d steps = %d total", cfg.epochs, steps_per_epoch, total_steps)
+    warmup_steps = steps_per_epoch * cfg.warmup_epochs
+    logger.info(
+        "%d epochs x %d steps = %d total (warmup %d steps)",
+        cfg.epochs, steps_per_epoch, total_steps, warmup_steps,
+    )
 
     global_step = 0
     best_acc = 0.0
@@ -167,7 +171,7 @@ def train_one_run(cfg: TrainConfig) -> None:
             imgs = imgs.to(config.DEVICE, non_blocking=True)
             labels = labels.to(config.DEVICE, non_blocking=True)
 
-            scale = cosine_with_warmup(global_step, total_steps, cfg.warmup_steps)
+            scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
             set_lr(optimizer, cfg.lr, scale)
 
             with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
