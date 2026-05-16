@@ -13,13 +13,13 @@ single forward pass on a (4, C, H, W) tensor.
 from collections import Counter
 from dataclasses import dataclass
 
-import pillow_jxl  # noqa: F401  ensure JXL handler is registered
 import torch
 from PIL import Image
 from torch import nn
 from torchvision.transforms import functional as TF
 
 import config
+import image_io  # noqa: F401  registers JXL + truncated-image handling for callers
 from config import build_eval_transform
 
 

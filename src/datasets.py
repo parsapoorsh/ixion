@@ -1,8 +1,7 @@
 """Image loading and the rotation pair wrapper.
 
-PIL is used for decoding; pillow-jxl-plugin auto-registers on import so
-PIL.Image.open transparently handles JPEG-XL alongside the formats PIL
-already supports.
+Image opening is delegated to image_io.open_rgb so the JXL handler and the
+truncated-image tolerance are registered in exactly one place.
 
 Each base image yields four training samples — one per rotation in
 {0, 90, 180, 270}. The sample index is (image_idx, rotation_idx), so each
@@ -13,15 +12,13 @@ wiring live in builders.py.
 
 from pathlib import Path
 
-import pillow_jxl  # noqa: F401  side effect: registers JXL handler with PIL
 import torch
-from PIL import Image, ImageFile
+from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import functional as TF
 
 import config
-
-ImageFile.LOAD_TRUNCATED_IMAGES = True
+from image_io import open_rgb
 
 
 class ImageLoader(Dataset):
@@ -34,7 +31,7 @@ class ImageLoader(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> Image.Image:
-        return Image.open(self.files[idx]).convert("RGB")
+        return open_rgb(self.files[idx])
 
 
 class RotationPairDataset(Dataset):

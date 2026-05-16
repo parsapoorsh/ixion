@@ -14,13 +14,12 @@ import random
 import time
 from dataclasses import dataclass
 
-import pillow_jxl  # noqa: F401  side effect: registers JXL handler with PIL
 import torch
-from PIL import Image
 from torchvision.transforms import functional as TF
 from tqdm import tqdm
 
 import config
+from image_io import open_rgb
 from index import index_files
 from logsetup import setup_logging
 from spec import DatasetSpec
@@ -105,7 +104,7 @@ def compute_stats(files) -> ChannelStats:
 
     for path in tqdm(files, desc="stats", unit="img"):
         try:
-            img = Image.open(path).convert("RGB")
+            img = open_rgb(path)
         except Exception as exc:
             logger.warning("stats: skipping %s (%s)", path, exc)
             continue

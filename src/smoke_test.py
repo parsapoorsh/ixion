@@ -10,10 +10,10 @@ launching a real training run.
 import logging
 
 import torch
-from PIL import Image
 
 import config
 from config import build_train_transform
+from image_io import open_rgb
 from infer import predict_image
 from logsetup import setup_logging
 from model import RotationModel
@@ -37,7 +37,7 @@ def main() -> None:
     spec = config.DATASETS[0]
     stats = get_stats(spec)
     train_tf = build_train_transform(mean=stats.mean, std=stats.std)
-    imgs = [train_tf(Image.open(p).convert("RGB")) for p in sample_files[:4]]
+    imgs = [train_tf(open_rgb(p)) for p in sample_files[:4]]
     batch = torch.stack(imgs).to(config.DEVICE)
     labels = torch.tensor([0, 1, 2, 3], device=config.DEVICE)
 
@@ -55,7 +55,7 @@ def main() -> None:
     logger.info("inference on examples/:")
     for p in sample_files:
         try:
-            img = Image.open(p).convert("RGB")
+            img = open_rgb(p)
         except Exception as exc:
             logger.warning("%s: failed to open (%s)", p.name, exc)
             continue
