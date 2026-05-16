@@ -190,7 +190,9 @@ utils/
   index.py        index_files(name, roots) + PathList (sequence view over a
                   path trie) + clear_cache() — filesystem scan cached as
                   lzma-compressed trie JSON
-  logsetup.py     setup_logging() — shared logger config
+  logsetup.py     setup_logging() — shared logger config; installs a
+                  TqdmLoggingHandler so log records route through
+                  tqdm.write and don't clobber an active progress bar
 ```
 
 **Dependency direction**: `utils.* + constants → builders →
