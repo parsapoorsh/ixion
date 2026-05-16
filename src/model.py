@@ -36,10 +36,3 @@ class RotationModel(nn.Module):
 
     def calibrated_logits(self, x: torch.Tensor) -> torch.Tensor:
         return self.forward(x) / self.temperature
-
-    def param_groups(self, backbone_lr: float, head_lr: float, weight_decay: float):
-        """Layer-wise LR: backbone gets a lower rate than the freshly initialised head."""
-        return [
-            {"params": self.backbone.parameters(), "lr": backbone_lr, "weight_decay": weight_decay},
-            {"params": self.head.parameters(), "lr": head_lr, "weight_decay": weight_decay},
-        ]

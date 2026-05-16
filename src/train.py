@@ -31,8 +31,7 @@ class TrainConfig:
     epochs: int = 8
     batch_size: int = 128
     num_workers: int = 12
-    backbone_lr: float = 2e-4
-    head_lr: float = 2e-3
+    lr: float = 1e-3
     weight_decay: float = 0.05
     label_smoothing: float = 0.1
     warmup_steps: int = 500
@@ -101,13 +100,13 @@ def cosine_with_warmup(step: int, total_steps: int, warmup: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
-def set_lrs(
+def set_lr(
     optimizer: torch.optim.Optimizer,
-    base_lrs: list[float],
+    base_lr: float,
     scale: float,
 ) -> None:
-    for group, base in zip(optimizer.param_groups, base_lrs):
-        group["lr"] = base * scale
+    for group in optimizer.param_groups:
+        group["lr"] = base_lr * scale
 
 
 def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
@@ -143,13 +142,12 @@ def train_one_run(cfg: TrainConfig) -> None:
     model = RotationModel(pretrained=False).to(config.DEVICE)
     ema = ModelEMA(model, decay=cfg.ema_decay)
 
-    param_groups = model.param_groups(
-        backbone_lr=cfg.backbone_lr,
-        head_lr=cfg.head_lr,
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=cfg.lr,
+        betas=(0.9, 0.999),
         weight_decay=cfg.weight_decay,
     )
-    base_lrs = [g["lr"] for g in param_groups]
-    optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
     loss_fn = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
 
     steps_per_epoch = len(train_loader)
@@ -170,7 +168,7 @@ def train_one_run(cfg: TrainConfig) -> None:
             labels = labels.to(config.DEVICE, non_blocking=True)
 
             scale = cosine_with_warmup(global_step, total_steps, cfg.warmup_steps)
-            set_lrs(optimizer, base_lrs, scale)
+            set_lr(optimizer, cfg.lr, scale)
 
             with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
                 logits = model(imgs)
