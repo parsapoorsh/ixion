@@ -43,9 +43,9 @@ def load_or_build_index(
         with cache.open() as f:
             return [Path(p) for p in json.load(f)]
 
-    t0 = time.time()
+    t0 = time.monotonic()
     files = scan_images(roots)
-    dt = time.time() - t0
+    dt = time.monotonic() - t0
     log.info("scanned %s: %d files in %.1fs", name, len(files), dt)
 
     with cache.open("w") as f:

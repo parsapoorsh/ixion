@@ -129,7 +129,7 @@ def train_one_run(cfg: TrainConfig) -> None:
     best_acc = 0.0
     for epoch in range(cfg.epochs):
         model.train()
-        epoch_start = time.time()
+        epoch_start = time.monotonic()
         running_loss = 0.0
         running_correct = 0
         running_seen = 0
@@ -165,7 +165,7 @@ def train_one_run(cfg: TrainConfig) -> None:
                 )
             global_step += 1
 
-        dt = time.time() - epoch_start
+        dt = time.monotonic() - epoch_start
         log.info("epoch %d done in %.0fs, throughput %.1f img/s",
                  epoch, dt, running_seen / dt)
 
