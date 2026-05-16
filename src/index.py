@@ -16,6 +16,15 @@ import config
 logger = logging.getLogger(__name__)
 
 
+def clear_cache() -> None:
+    """Delete every cached index_*.json under the index cache directory."""
+    if not config.INDEX_CACHE_DIR.exists():
+        return
+    for f in config.INDEX_CACHE_DIR.glob("index_*.json"):
+        f.unlink()
+        logger.info("removed cached index %s", f.name)
+
+
 def index_files(name: str, roots: Sequence[Path]) -> list[Path]:
     """Recursively list every regular file under the given roots, cached on disk.
 

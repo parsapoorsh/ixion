@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 import config
 from builders import build_val_dataset
 from calibration import expected_calibration_error, fit_temperature, gather_logits
+from index import clear_cache
 from logsetup import setup_logging
 from model import RotationModel
 
@@ -18,15 +19,37 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     setup_logging()
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(
+        description="Fit temperature scaling on the validation set "
+                    "and write a calibrated checkpoint."
+    )
     p.add_argument(
         "--checkpoint",
         type=Path,
         default=config.CHECKPOINT_DIR / "best.pt",
+        help="path to a trained checkpoint (defaults to checkpoints/best.pt)",
     )
-    p.add_argument("--batch-size", type=int, default=256)
-    p.add_argument("--num-workers", type=int, default=8)
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=256,
+        help="batch size used while gathering logits",
+    )
+    p.add_argument(
+        "--num-workers",
+        type=int,
+        default=8,
+        help="DataLoader worker processes",
+    )
+    p.add_argument(
+        "--invalidate-cache",
+        action="store_true",
+        help="delete cached file-index JSONs before indexing",
+    )
     args = p.parse_args()
+
+    if args.invalidate_cache:
+        clear_cache()
 
     model = RotationModel(pretrained=False).to(config.DEVICE)
     state = torch.load(args.checkpoint, map_location=config.DEVICE)

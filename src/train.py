@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 import config
 from builders import build_train_dataset, build_val_dataset
 from ema import ModelEMA
+from index import clear_cache
 from logsetup import setup_logging
 from model import RotationModel
 
@@ -220,11 +221,34 @@ def train_one_run(cfg: TrainConfig) -> None:
 
 def main() -> None:
     setup_logging()
-    p = argparse.ArgumentParser()
-    p.add_argument("--epochs", type=int, default=TrainConfig.epochs)
-    p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
-    p.add_argument("--num-workers", type=int, default=TrainConfig.num_workers)
+    p = argparse.ArgumentParser(description="Train the rotation detector.")
+    p.add_argument(
+        "--epochs",
+        type=int,
+        default=TrainConfig.epochs,
+        help="number of full passes over the (4x-rotated) training set",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=TrainConfig.batch_size,
+        help="images per training step (BF16 on RTX 5060 Ti fits 128 comfortably)",
+    )
+    p.add_argument(
+        "--num-workers",
+        type=int,
+        default=TrainConfig.num_workers,
+        help="DataLoader worker processes for image decoding",
+    )
+    p.add_argument(
+        "--invalidate-cache",
+        action="store_true",
+        help="delete cached file-index JSONs before indexing",
+    )
     args = p.parse_args()
+
+    if args.invalidate_cache:
+        clear_cache()
 
     cfg = TrainConfig(
         epochs=args.epochs,
