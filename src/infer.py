@@ -82,14 +82,3 @@ def predict_image(
         votes=votes_deg,
         entropy=mean_entropy,
     )
-
-
-def predict_path(
-    model: nn.Module,
-    path,
-    device: torch.device,
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
-) -> Prediction:
-    img = Image.open(path).convert("RGB")
-    return predict_image(model, img, device, mean=mean, std=std)
