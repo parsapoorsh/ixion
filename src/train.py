@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -69,7 +70,13 @@ def run_validation(
     total_loss = 0.0
     total_n = 0
     loss_fn = nn.CrossEntropyLoss()
-    pbar = tqdm(loader, desc="val", unit="batch", leave=False)
+    pbar = tqdm(
+        loader,
+        desc="val",
+        unit="batch",
+        leave=False,
+        file=sys.stdout,
+    )
     for imgs, labels in pbar:
         imgs = imgs.to(config.DEVICE, non_blocking=True)
         labels = labels.to(config.DEVICE, non_blocking=True)
@@ -182,6 +189,7 @@ def train_one_run(cfg: TrainConfig) -> None:
             desc=f"ep {epoch}",
             unit="batch",
             leave=False,
+            file=sys.stdout,
         )
         for imgs, labels in pbar:
             imgs = imgs.to(config.DEVICE, non_blocking=True)
