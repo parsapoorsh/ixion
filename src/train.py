@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 import config
 import constants
@@ -68,7 +69,8 @@ def run_validation(
     total_loss = 0.0
     total_n = 0
     loss_fn = nn.CrossEntropyLoss()
-    for imgs, labels in loader:
+    pbar = tqdm(loader, desc="val", unit="batch", leave=False)
+    for imgs, labels in pbar:
         imgs = imgs.to(config.DEVICE, non_blocking=True)
         labels = labels.to(config.DEVICE, non_blocking=True)
         with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
@@ -175,7 +177,13 @@ def train_one_run(cfg: TrainConfig) -> None:
         running_correct = 0
         running_seen = 0
 
-        for imgs, labels in train_loader:
+        pbar = tqdm(
+            train_loader,
+            desc=f"ep {epoch}",
+            unit="batch",
+            leave=False,
+        )
+        for imgs, labels in pbar:
             imgs = imgs.to(config.DEVICE, non_blocking=True)
             labels = labels.to(config.DEVICE, non_blocking=True)
 
@@ -196,10 +204,15 @@ def train_one_run(cfg: TrainConfig) -> None:
             running_correct += (logits.argmax(dim=1) == labels).sum().item()
             running_seen += imgs.size(0)
 
+            lr_now = optimizer.param_groups[0]["lr"]
+            acc = running_correct / max(1, running_seen)
+            avg_loss = running_loss / max(1, running_seen)
+            pbar.set_postfix(
+                loss=f"{avg_loss:.4f}",
+                acc=f"{acc:.3f}",
+                lr=f"{lr_now:.2e}",
+            )
             if global_step % cfg.log_every == 0:
-                lr_now = optimizer.param_groups[0]["lr"]
-                acc = running_correct / max(1, running_seen)
-                avg_loss = running_loss / max(1, running_seen)
                 logger.info(
                     "ep %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
                     epoch, global_step, total_steps, avg_loss, acc, lr_now,
