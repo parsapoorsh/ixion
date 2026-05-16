@@ -41,6 +41,7 @@ class TrainConfig:
     epochs: int = 100
     batch_size: int = 64
     num_workers: int = constants.NUM_WORKERS
+    prefetch_factor: int = constants.PREFETCH_FACTOR
     lr: float = 1e-3
     weight_decay: float = 0.05
     label_smoothing: float = 0.1
@@ -139,7 +140,7 @@ def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
         num_workers=cfg.num_workers,
         pin_memory=True,
         persistent_workers=True,
-        prefetch_factor=4,
+        prefetch_factor=cfg.prefetch_factor,
         drop_last=True,
     )
     val_loader = DataLoader(
@@ -149,7 +150,7 @@ def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
         num_workers=cfg.num_workers,
         pin_memory=True,
         persistent_workers=True,
-        prefetch_factor=4,
+        prefetch_factor=cfg.prefetch_factor,
     )
     return train_loader, val_loader
 
@@ -274,6 +275,12 @@ def main() -> None:
         help="DataLoader worker processes for image decoding",
     )
     p.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=TrainConfig.prefetch_factor,
+        help="batches each worker keeps queued ahead of the consumer (deeper queues mask HDD latency, use more RAM)",
+    )
+    p.add_argument(
         "--invalidate-cache",
         action="store_true",
         help="delete cached file-index and per-dataset stats JSONs before running",
@@ -288,6 +295,7 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
     )
     train_one_run(cfg)
 
