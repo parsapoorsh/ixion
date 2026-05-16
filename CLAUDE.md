@@ -71,19 +71,32 @@ noise-filtering pass — both were over-engineered.
   directly — use `open_rgb` so new modules can't silently miss either
   side effect. Directories may also contain other formats; do **not**
   hard-code `.jxl` anywhere, let PIL fail at decode if anything's wrong.
-- **File index**: scanned once per (split, dataset) and cached as JSON under
-  `cache/`. CLI flag `--invalidate-cache` deletes the JSONs.
+- **File index**: scanned once per (split, dataset). The result is collapsed
+  into a path *trie* (nested dict, directories as subdicts, files as null
+  leaves) and written through `lzma` to `cache/index_<name>.json.xz` — shared
+  prefixes deduplicate and the file shrinks by roughly an order of magnitude
+  vs. the flat list. `index_files` returns a `PathList`, a sequence view
+  that walks the trie on `__getitem__` so the full path list never has to be
+  materialised in memory. `ImageLoader.files` is typed `Sequence[Path]`, so
+  a `PathList` (or any other sequence) drops in. CLI flag
+  `--invalidate-cache` deletes the cache files.
 - **Rotation pairs**: each image yields 4 samples deterministically.
   `len(dataset) = 4 * n_images`, sample `i` → `(img_idx, rot_idx) = divmod(i, 4)`.
   Guarantees balanced classes and full coverage every epoch.
 - **Per-dataset normalization**: each `DatasetSpec` can carry an explicit
   `mean`/`std`, or leave them as `None`. When `None`, `stats.get_stats`
-  samples ~5000 train images for that spec, computes per-channel mean/std
-  in float64, and caches the result as JSON under `cache/stats_<name>.json`.
+  samples `config.STATS_SAMPLE_FRACTION` (5% by default) of the train split
+  with seed `config.STATS_SAMPLE_SEED`, computes per-channel mean/std in
+  float64, and caches the result as JSON under `cache/stats_<name>.json`.
   Default `DATASETS` in `config.py` pass `None` for both shipped datasets;
   `IMAGENET_MEAN`/`IMAGENET_STD` remain in `config.py` so a spec can be
   pinned to fixed constants when wanted. `build_*_dataset` calls
-  `get_stats(spec)` per spec, then `ConcatDataset`s them.
+  `get_stats(spec)` per spec, then `ConcatDataset`s them. Note: because
+  we compute stats *after* the same resize used at train time, the std
+  comes out higher than canonical ImageNet (~0.27 vs 0.229) — that's
+  expected and consistent with the input distribution the model sees.
+  Changing `STATS_SAMPLE_FRACTION` needs `--invalidate-cache`; the cache
+  file doesn't track which fraction produced it.
 
 ## Ambiguity detection — the key insight
 
@@ -106,9 +119,11 @@ Entropy + temperature scaling exists as a calibrated tiebreaker.
 spec.py        DatasetSpec dataclass (name, train, val, mean, std)
 config.py      DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
                IMAGENET_MEAN/STD, DATASETS (instances), sizes, ROTATIONS,
-               build_train_transform, build_eval_transform
-index.py       index_files(name, roots) + clear_cache() — filesystem scan with
-               on-disk JSON cache
+               STATS_SAMPLE_FRACTION/SEED, build_train_transform,
+               build_eval_transform
+index.py       index_files(name, roots) + PathList (sequence view over a
+               path trie) + clear_cache() — filesystem scan cached as
+               lzma-compressed trie JSON
 image_io.py    open_rgb(path) — single entry point for opening images;
                registers the JXL handler and enables truncated-image tolerance
 datasets.py    ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
@@ -209,6 +224,15 @@ Strict rules — apply without asking:
   whole reason that file exists.
 - `RandomResizedCrop` with low scale (< ~0.7) can crop out all orientation
   cues. Keep crops mild.
+- `index_files` returns a `PathList`, not a real list. It supports `len()`
+  and `[idx]` and is iterable, but it is *not* a `list` — don't call
+  list-only methods on it. `random.sample` and torch's `Dataset` both
+  work because they only need the sequence protocol.
+- Our computed dataset stats have higher std than the canonical ImageNet
+  constants (~0.27 vs 0.229). Reason: we compute after the resize used
+  at train time; canonical values are computed on raw full-res pixels.
+  Don't "fix" this by hardcoding the canonical numbers — the computed
+  ones match the actual input distribution.
 
 ## Outstanding work (as of last session)
 
