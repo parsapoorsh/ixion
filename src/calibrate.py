@@ -12,7 +12,7 @@ from builders import build_val_dataset
 from calibration import expected_calibration_error, fit_temperature, gather_logits
 from checkpoint import load_state_dict_from_checkpoint
 from logsetup import setup_logging
-from model import build_model
+from model import RotationModel
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def main() -> None:
     args = p.parse_args()
 
     device = torch.device("cuda")
-    model = build_model(pretrained=False).to(device)
+    model = RotationModel(pretrained=False).to(device)
     model.load_state_dict(load_state_dict_from_checkpoint(args.checkpoint, device))
     model.train(False)
 

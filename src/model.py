@@ -43,7 +43,3 @@ class RotationModel(nn.Module):
             {"params": self.backbone.parameters(), "lr": backbone_lr, "weight_decay": weight_decay},
             {"params": self.head.parameters(), "lr": head_lr, "weight_decay": weight_decay},
         ]
-
-
-def build_model(pretrained: bool = True) -> RotationModel:
-    return RotationModel(pretrained=pretrained)

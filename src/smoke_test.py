@@ -16,7 +16,7 @@ import config
 from builders import build_train_transform
 from infer import predict_image
 from logsetup import setup_logging
-from model import build_model
+from model import RotationModel
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("device = %s", device)
 
-    model = build_model(pretrained=True).to(device)
+    model = RotationModel(pretrained=True).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     log.info("model params = %.2f M", n_params)
 

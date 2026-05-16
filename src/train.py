@@ -23,7 +23,7 @@ from checkpoint import save_checkpoint
 from ema import ModelEMA
 from evaluate import run_validation
 from logsetup import setup_logging
-from model import build_model
+from model import RotationModel
 from schedule import cosine_with_warmup, set_lrs
 
 log = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def train_one_run(cfg: TrainConfig) -> None:
 
     train_loader, val_loader = build_loaders(cfg)
 
-    model = build_model(pretrained=True).to(device)
+    model = RotationModel(pretrained=True).to(device)
     ema = ModelEMA(model, decay=cfg.ema_decay)
 
     param_groups = model.param_groups(
