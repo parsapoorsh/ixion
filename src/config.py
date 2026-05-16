@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
+import torch
+
 from spec import DatasetSpec
+
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ImageNet normalization is the canonical choice for any model fine-tuned from

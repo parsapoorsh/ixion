@@ -53,18 +53,17 @@ class ValidationResult:
 def run_validation(
     model: nn.Module,
     loader: DataLoader,
-    device: torch.device,
 ) -> ValidationResult:
     model.train(False)
-    correct = torch.zeros(config.NUM_CLASSES, device=device)
-    seen = torch.zeros(config.NUM_CLASSES, device=device)
+    correct = torch.zeros(config.NUM_CLASSES, device=config.DEVICE)
+    seen = torch.zeros(config.NUM_CLASSES, device=config.DEVICE)
     total_loss = 0.0
     total_n = 0
     loss_fn = nn.CrossEntropyLoss()
     for imgs, labels in loader:
-        imgs = imgs.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        imgs = imgs.to(config.DEVICE, non_blocking=True)
+        labels = labels.to(config.DEVICE, non_blocking=True)
+        with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
             logits = model(imgs)
             loss = loss_fn(logits, labels)
         preds = logits.argmax(dim=1)
@@ -138,11 +137,9 @@ def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
 
 def train_one_run(cfg: TrainConfig) -> None:
     torch.manual_seed(cfg.seed)
-    device = torch.device("cuda")
-
     train_loader, val_loader = build_loaders(cfg)
 
-    model = RotationModel(pretrained=True).to(device)
+    model = RotationModel(pretrained=True).to(config.DEVICE)
     ema = ModelEMA(model, decay=cfg.ema_decay)
 
     param_groups = model.param_groups(
@@ -168,13 +165,13 @@ def train_one_run(cfg: TrainConfig) -> None:
         running_seen = 0
 
         for imgs, labels in train_loader:
-            imgs = imgs.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
+            imgs = imgs.to(config.DEVICE, non_blocking=True)
+            labels = labels.to(config.DEVICE, non_blocking=True)
 
             scale = cosine_with_warmup(global_step, total_steps, cfg.warmup_steps)
             set_lrs(optimizer, base_lrs, scale)
 
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
                 logits = model(imgs)
                 loss = loss_fn(logits, labels)
 
@@ -205,7 +202,7 @@ def train_one_run(cfg: TrainConfig) -> None:
         )
 
         if (epoch + 1) % cfg.val_every_epoch == 0:
-            result = run_validation(ema.module, val_loader, device)
+            result = run_validation(ema.module, val_loader)
             log.info(
                 "val ep %d loss=%.4f acc=%.4f per_class=%s",
                 epoch, result.loss, result.acc, result.per_class,

@@ -28,9 +28,8 @@ def main() -> None:
     p.add_argument("--num-workers", type=int, default=8)
     args = p.parse_args()
 
-    device = torch.device("cuda")
-    model = RotationModel(pretrained=False).to(device)
-    state = torch.load(args.checkpoint, map_location=device)
+    model = RotationModel(pretrained=False).to(config.DEVICE)
+    state = torch.load(args.checkpoint, map_location=config.DEVICE)
     state_dict = state.get("ema") or state.get("model") or state
     model.load_state_dict(state_dict)
     model.train(False)
@@ -45,7 +44,7 @@ def main() -> None:
     )
 
     log.info("gathering logits...")
-    logits, labels = gather_logits(model, loader, device)
+    logits, labels = gather_logits(model, loader, config.DEVICE)
 
     ece_before = expected_calibration_error(logits.softmax(dim=-1), labels)
     T = fit_temperature(logits, labels)

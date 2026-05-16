@@ -23,10 +23,9 @@ log = logging.getLogger(__name__)
 
 def main() -> None:
     setup_logging()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log.info("device = %s", device)
+    log.info("device = %s", config.DEVICE)
 
-    model = RotationModel(pretrained=True).to(device)
+    model = RotationModel(pretrained=True).to(config.DEVICE)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     log.info("model params = %.2f M", n_params)
 
@@ -34,16 +33,14 @@ def main() -> None:
     sample_files = sorted(eg_dir.glob("*"))
     assert sample_files, f"no example images in {eg_dir}"
 
-    train_tf = build_train_transform(
-        mean=config.IMAGENET_MEAN,
-        std=config.IMAGENET_STD,
-    )
+    spec = config.DATASETS[0]
+    train_tf = build_train_transform(mean=spec.mean, std=spec.std)
     imgs = [train_tf(Image.open(p).convert("RGB")) for p in sample_files[:4]]
-    batch = torch.stack(imgs).to(device)
-    labels = torch.tensor([0, 1, 2, 3], device=device)
+    batch = torch.stack(imgs).to(config.DEVICE)
+    labels = torch.tensor([0, 1, 2, 3], device=config.DEVICE)
 
     model.train()
-    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+    with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
         logits = model(batch)
         loss = torch.nn.functional.cross_entropy(logits, labels)
     loss.backward()
@@ -63,9 +60,9 @@ def main() -> None:
         pred = predict_image(
             model=model,
             img=img,
-            device=device,
-            mean=config.IMAGENET_MEAN,
-            std=config.IMAGENET_STD,
+            device=config.DEVICE,
+            mean=spec.mean,
+            std=spec.std,
         )
         log.info(
             "%-25s rot=%s conf=%-9s votes=%s entropy=%.3f",
