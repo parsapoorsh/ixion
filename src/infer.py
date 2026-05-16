@@ -19,7 +19,6 @@ from torch import nn
 from torchvision.transforms import functional as TF
 
 import config
-import image_io  # noqa: F401  registers JXL + truncated-image handling for callers
 from config import build_eval_transform
 
 
