@@ -13,7 +13,7 @@ import torch
 from PIL import Image
 
 import config
-from datasets import build_train_transform
+from builders import build_train_transform
 from infer import predict_image
 from model import build_model
 

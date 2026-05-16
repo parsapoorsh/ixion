@@ -13,7 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 import config
-from datasets import build_val_dataset
+from builders import build_val_dataset
 from infer import load_model_for_inference
 
 log = logging.getLogger(__name__)
