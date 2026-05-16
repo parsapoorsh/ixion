@@ -13,7 +13,7 @@ import torch
 from PIL import Image
 
 import config
-from builders import build_train_transform
+from config import build_train_transform
 from infer import predict_image
 from logsetup import setup_logging
 from model import RotationModel
