@@ -115,7 +115,7 @@ noise-filtering pass — both were over-engineered.
   out higher than canonical ImageNet (~0.27 vs 0.229) — that's expected
   and consistent with the input distribution the model actually sees.
   Don't "fix" by hardcoding canonical numbers.
-- **Worker count**: `config.NUM_WORKERS` (default 8) is the single source
+- **Worker count**: `constants.NUM_WORKERS` (default 8) is the single source
   of truth for DataLoader workers across `train`, `calibrate`, and
   `stats`. Every CLI exposes `--num-workers` to override per-run. Too many
   workers make HDDs slower, not faster — drop the number if the bar

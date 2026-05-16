@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 class TrainConfig:
     epochs: int = 100
     batch_size: int = 128
-    num_workers: int = config.NUM_WORKERS
+    num_workers: int = constants.NUM_WORKERS
     lr: float = 1e-3
     weight_decay: float = 0.05
     label_smoothing: float = 0.1

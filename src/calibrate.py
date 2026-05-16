@@ -105,7 +105,7 @@ def main() -> None:
     p.add_argument(
         "--num-workers",
         type=int,
-        default=config.NUM_WORKERS,
+        default=constants.NUM_WORKERS,
         help="DataLoader worker processes",
     )
     p.add_argument(

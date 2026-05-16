@@ -16,3 +16,9 @@ NUM_CLASSES = len(ROTATIONS)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 INDEX_CACHE_DIR = PROJECT_ROOT / "cache"
+
+# DataLoader worker processes for image decoding. Tune to the machine —
+# more workers help when decode is the bottleneck, but too many concurrent
+# random seeks make HDD-backed datasets slower, not faster. Each CLI also
+# exposes --num-workers to override per-run.
+NUM_WORKERS = 8
