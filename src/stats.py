@@ -89,7 +89,7 @@ def sample_files(files, n, seed):
     if len(files) <= n:
         return list(files)
     rng = random.Random(seed)
-    return rng.sample(list(files), n)
+    return rng.sample(files, n)
 
 
 def compute_stats(files) -> ChannelStats:
