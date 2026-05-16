@@ -13,12 +13,16 @@ real-time.
 
 ## Hardware target
 
-- **Training**: RTX 5060 Ti 16GB (Blackwell, sm_120). Requires PyTorch with
-  CUDA 12.8+ wheels. BF16 mixed precision is the native fast path.
-- **Display GPU**: GTX 1660 SUPER 6GB. Useful for driving the desktop so the
-  5060 Ti is 100% dedicated to training. **Do not** try to use it for
-  training/DDP — Turing has no BF16 tensor cores and the 6GB would bottleneck
-  the per-GPU batch size on the faster card.
+- **Training + display**: RTX 5060 Ti 16GB (Blackwell, sm_120). Same card
+  drives the desktop, so expect ~0.5–1 GB of VRAM permanently reserved by
+  the compositor — leave headroom when sizing batches. Requires PyTorch
+  with CUDA 12.8+ wheels. BF16 mixed precision is the native fast path.
+- **Second GPU**: a GTX 1660 SUPER 6GB is physically installed alongside
+  the 5060 Ti but is currently not used for anything. **Do not** wire it
+  into training/DDP — Turing has no BF16 tensor cores and the 6GB would
+  bottleneck the per-GPU batch size on the faster card. The realistic
+  future use is as a display-offload card so the 5060 Ti's VRAM is
+  freed up for compute.
 - **Inference VRAM budget**: ≤ 250 MB. Comfortable via ONNX Runtime at
   deployment time; PyTorch's CUDA context alone eats ~180 MB so dev
   measurements look higher than the eventual deployment.
@@ -227,8 +231,8 @@ Strict rules — apply without asking:
 
 ## Gotchas
 
-- The user has **two GPUs** but only the 5060 Ti is useful for training. The
-  1660 SUPER is just for driving the display.
+- The user has **two GPUs** but only the 5060 Ti is in use; it drives both
+  the desktop and training. The 1660 SUPER sits idle in the box.
 - **`ImageList` was renamed to `ImageLoader`** — don't go back.
 - The cache directory is `cache/` (no leading dot). Earlier it was `.cache/`
   which collided with the gitignore Python template.
