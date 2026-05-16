@@ -14,6 +14,7 @@ import random
 import time
 from dataclasses import dataclass
 
+import pillow_jxl  # noqa: F401  side effect: registers JXL handler with PIL
 import torch
 from PIL import Image
 from torchvision.transforms import functional as TF
