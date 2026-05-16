@@ -139,6 +139,7 @@ def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
         num_workers=cfg.num_workers,
         pin_memory=True,
         persistent_workers=True,
+        prefetch_factor=4,
         drop_last=True,
     )
     val_loader = DataLoader(
@@ -148,6 +149,7 @@ def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
         num_workers=cfg.num_workers,
         pin_memory=True,
         persistent_workers=True,
+        prefetch_factor=4,
     )
     return train_loader, val_loader
 
