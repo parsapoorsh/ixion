@@ -6,12 +6,14 @@ Run from the project root:
 Knobs are on TrainConfig; defaults match the recipe in the project plan.
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 import math
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
@@ -24,6 +26,9 @@ from ema import ModelEMA
 from index import clear_cache
 from logsetup import setup_logging
 from model import RotationModel
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
