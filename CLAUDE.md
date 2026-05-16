@@ -130,19 +130,23 @@ constants.py      ROTATIONS, NUM_CLASSES, PROJECT_ROOT, CHECKPOINT_DIR,
                   INDEX_CACHE_DIR — domain constants and static paths
                   depended on by datasets/model/train/infer/utils without
                   going through config
-datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None)
-                  + ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
+datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None),
+                  ImageLoader (PIL by index), RotationPairDataset (4× wrapper),
+                  build_train_dataset / build_val_dataset (call get_stats + the
+                  transforms from builders, then ConcatDataset the per-spec parts)
 stats.py          get_stats(spec) — per-dataset channel mean/std, sampled and
                   cached, or returned from the spec when set explicitly
-builders.py       build_train_transform, build_eval_transform,
-                  build_train_dataset, build_val_dataset
+builders.py       build_train_transform, build_eval_preprocess (Resize →
+                  CenterCrop → ToTensor; shared with StatsDataset),
+                  build_eval_transform (preprocess + Normalize). Transforms
+                  only — no stats / index / DatasetSpec dependency.
 model.py          RotationModel (ConvNeXt-V2-Tiny + head + temperature)
 ema.py            ModelEMA — deepcopy + per-step weight averaging
-calibration.py    gather_logits, fit_temperature (LBFGS), expected_calibration_error
 infer.py          Prediction dataclass + predict_image (4-rotation consistency)
 train.py          TrainConfig, ValidationResult, run_validation,
                   save_checkpoint, cosine_with_warmup, set_lr, train_one_run, main
-calibrate.py      CLI: load checkpoint → gather logits → fit T → save
+calibrate.py      gather_logits + fit_temperature (LBFGS) +
+                  expected_calibration_error + CLI (load checkpoint → fit T → save)
 smoke_test.py     Wiring sanity test on examples/
 utils/
   image_io.py     open_rgb(path) — single entry point for opening images;
@@ -153,8 +157,11 @@ utils/
   logsetup.py     setup_logging() — shared logger config
 ```
 
-**Dependency direction**: `utils.* + constants → datasets → config →
-builders → {train, calibrate, infer, smoke_test}`. No cycles.
+**Dependency direction**: `utils.* + constants → builders →
+{stats, datasets} → config → {train, calibrate, infer, smoke_test}`.
+builders has no project-local deps beyond `config`, which lets stats
+import `build_eval_preprocess` and datasets import the rest of the
+transforms without recreating the old builders↔stats cycle. No cycles.
 
 **Import style**: `src/` is on `sys.path` when a CLI is run from project
 root (`venv/bin/python src/<file>.py`), so absolute imports work — e.g.
