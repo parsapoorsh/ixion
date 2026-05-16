@@ -40,7 +40,7 @@ def main() -> None:
     p.add_argument(
         "--num-workers",
         type=int,
-        default=8,
+        default=config.NUM_WORKERS,
         help="DataLoader worker processes",
     )
     p.add_argument(

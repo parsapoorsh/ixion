@@ -41,6 +41,13 @@ STATS_SAMPLE_FRACTION = 0.05
 STATS_SAMPLE_SEED = 0
 
 
+# DataLoader worker processes for image decoding. Tune to the machine —
+# more workers help when decode is the bottleneck, but too many concurrent
+# random seeks make HDD-backed datasets slower, not faster. Each CLI also
+# exposes --num-workers to override per-run.
+NUM_WORKERS = 8
+
+
 # Image size fed to the model. ConvNeXt-V2-Tiny ends in AdaptiveAvgPool so
 # the architecture itself accepts any size; 224 is the convention from the
 # pretrained checkpoint. Training from scratch leaves this as a free knob —

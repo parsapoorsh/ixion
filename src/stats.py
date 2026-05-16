@@ -54,7 +54,7 @@ def clear_cache() -> None:
 
 def get_stats(
     spec: DatasetSpec,
-    num_workers: int = 8,
+    num_workers: int = config.NUM_WORKERS,
 ) -> ChannelStats:
     """Return (mean, std) for the spec, computing+caching on first miss.
 
@@ -158,7 +158,7 @@ def stats_collate(batch: list[torch.Tensor | None]) -> torch.Tensor | None:
 
 def compute_stats(
     files: Sequence[Path],
-    num_workers: int = 8,
+    num_workers: int = config.NUM_WORKERS,
     batch_size: int = 64,
 ) -> ChannelStats:
     """Per-channel mean/std on a sample, decoded in workers and reduced on GPU.
@@ -214,7 +214,7 @@ def main() -> None:
     p.add_argument(
         "--num-workers",
         type=int,
-        default=8,
+        default=config.NUM_WORKERS,
         help="DataLoader worker processes used for image decoding",
     )
     p.add_argument(
