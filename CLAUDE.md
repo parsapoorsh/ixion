@@ -46,7 +46,10 @@ real-time.
 Single phase, 100 epochs from random init. No frozen warm-up phase, no
 noise-filtering pass — both were over-engineered.
 
-- Batch 128, BF16 autocast, AdamW (β=0.9/0.999), weight_decay 0.05
+- Batch 64, BF16 autocast, AdamW (β=0.9/0.999), weight_decay 0.05.
+  Batch 128 OOMs in practice: the desktop compositor + other GPU
+  processes eat enough VRAM that ConvNeXt-V2-Tiny activations at 224²
+  with BF16 push past the 15.47 GiB card budget. 64 fits with headroom.
 - LR 1e-3, cosine schedule with 5-epoch linear warmup
 - Label smoothing 0.1 — handles the ~1% wrong-orientation images in ImageNet
 - EMA decay 0.9999, evaluated and checkpointed off the EMA weights

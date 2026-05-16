@@ -263,7 +263,7 @@ def main() -> None:
         "--batch-size",
         type=int,
         default=TrainConfig.batch_size,
-        help="images per training step (BF16 on RTX 5060 Ti fits 128 comfortably)",
+        help="images per training step (BF16 on RTX 5060 Ti fits 64 with the desktop compositor active)",
     )
     p.add_argument(
         "--num-workers",
