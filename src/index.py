@@ -16,7 +16,7 @@ import config
 log = logging.getLogger(__name__)
 
 
-def scan_images(roots: Sequence[Path]) -> list[Path]:
+def scan_files(roots: Sequence[Path]) -> list[Path]:
     """Recursively gather every regular file under the given roots.
 
     No extension filter — the dataset directories are expected to contain only
@@ -44,7 +44,7 @@ def load_or_build_index(
             return [Path(p) for p in json.load(f)]
 
     t0 = time.monotonic()
-    files = scan_images(roots)
+    files = scan_files(roots)
     dt = time.monotonic() - t0
     log.info("scanned %s: %d files in %.1fs", name, len(files), dt)
 
