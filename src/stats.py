@@ -26,9 +26,6 @@ from spec import DatasetSpec
 
 logger = logging.getLogger(__name__)
 
-SAMPLE_SIZE = 5000
-SAMPLE_SEED = 0
-
 
 @dataclass(frozen=True)
 class ChannelStats:
@@ -65,8 +62,12 @@ def get_stats(spec: DatasetSpec) -> ChannelStats:
         )
 
     files = index_files(f"train_{spec.name}", [spec.train])
-    sample = sample_files(files, SAMPLE_SIZE, SAMPLE_SEED)
-    logger.info("computing %s stats over %d sampled images...", spec.name, len(sample))
+    target_n = max(1, int(len(files) * config.STATS_SAMPLE_FRACTION))
+    sample = sample_files(files, target_n, config.STATS_SAMPLE_SEED)
+    logger.info(
+        "computing %s stats over %d sampled images (%.1f%% of %d)...",
+        spec.name, len(sample), 100 * config.STATS_SAMPLE_FRACTION, len(files),
+    )
 
     t0 = time.monotonic()
     stats = compute_stats(sample)

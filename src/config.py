@@ -45,6 +45,12 @@ RESIZE_SIZE = 232
 ROTATIONS = (0, 90, 180, 270)
 NUM_CLASSES = len(ROTATIONS)
 
+# stats.get_stats samples this fraction of each dataset's train split.
+# Changing this requires --invalidate-cache to take effect; cached stats
+# don't track which fraction produced them.
+STATS_SAMPLE_FRACTION = 0.05
+STATS_SAMPLE_SEED = 0
+
 
 def build_train_transform(
     mean: tuple[float, float, float],
