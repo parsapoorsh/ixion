@@ -11,7 +11,7 @@ from torchvision import transforms as T
 
 import config
 from datasets import ImageList, RotationPairDataset
-from index import load_or_build_index
+from index import index_files
 from spec import DatasetSpec
 
 
@@ -51,7 +51,7 @@ def build_train_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     """
     parts: list[RotationPairDataset] = []
     for spec in datasets:
-        files = load_or_build_index(f"train_{spec.name}", [spec.train])
+        files = index_files(f"train_{spec.name}", [spec.train])
         transform = build_train_transform(spec.mean, spec.std)
         parts.append(RotationPairDataset(ImageList(files), transform))
     return ConcatDataset(parts)
@@ -60,7 +60,7 @@ def build_train_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
 def build_val_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     parts: list[RotationPairDataset] = []
     for spec in datasets:
-        files = load_or_build_index(f"val_{spec.name}", [spec.val])
+        files = index_files(f"val_{spec.name}", [spec.val])
         transform = build_eval_transform(spec.mean, spec.std)
         parts.append(RotationPairDataset(ImageList(files), transform))
     return ConcatDataset(parts)
