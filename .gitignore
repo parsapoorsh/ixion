@@ -165,6 +165,7 @@ cython_debug/
 # Project-specific
 cache/
 checkpoints/
+logs/
 
 # model checkpoints
 *.onnx
