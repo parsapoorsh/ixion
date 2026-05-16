@@ -72,7 +72,7 @@ def run_validation(
     loss_fn = nn.CrossEntropyLoss()
     pbar = tqdm(
         loader,
-        desc="val",
+        desc="validation",
         unit="batch",
         leave=False,
         file=sys.stdout,
@@ -186,7 +186,7 @@ def train_one_run(cfg: TrainConfig) -> None:
 
         pbar = tqdm(
             train_loader,
-            desc=f"ep {epoch}",
+            desc=f"epoch {epoch}",
             unit="batch",
             leave=False,
             file=sys.stdout,
@@ -222,7 +222,7 @@ def train_one_run(cfg: TrainConfig) -> None:
             )
             if global_step % cfg.log_every == 0:
                 logger.info(
-                    "ep %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
+                    "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
                     epoch, global_step, total_steps, avg_loss, acc, lr_now,
                 )
             global_step += 1
@@ -236,7 +236,7 @@ def train_one_run(cfg: TrainConfig) -> None:
         if (epoch + 1) % cfg.val_every_epoch == 0:
             result = run_validation(ema.module, val_loader)
             logger.info(
-                "val ep %d loss=%.4f acc=%.4f per_class=%s",
+                "validation epoch %d loss=%.4f acc=%.4f per_class=%s",
                 epoch, result.loss, result.acc, result.per_class,
             )
             if result.acc > best_acc:
