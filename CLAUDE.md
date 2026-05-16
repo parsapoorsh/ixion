@@ -84,24 +84,42 @@ noise-filtering pass — both were over-engineered.
   that walks the trie on `__getitem__` so the full path list never has to be
   materialised in memory. `ImageLoader.files` is typed `Sequence[Path]`, so
   a `PathList` (or any other sequence) drops in. CLI flag
-  `--invalidate-cache` deletes the cache files.
+  `--invalidate-cache` deletes the cache files (and stats cache too).
 - **Rotation pairs**: each image yields 4 samples deterministically.
   `len(dataset) = 4 * n_images`, sample `i` → `(img_idx, rot_idx) = divmod(i, 4)`.
   Guarantees balanced classes and full coverage every epoch.
 - **Per-dataset normalization**: each `DatasetSpec` can carry an explicit
-  `mean`/`std`, or leave them as `None`. When `None`, `stats.get_stats`
-  samples `config.STATS_SAMPLE_FRACTION` (5% by default) of the train split
-  with seed `config.STATS_SAMPLE_SEED`, computes per-channel mean/std in
-  float64, and caches the result as JSON under `cache/stats_<name>.json`.
+  `mean`/`std`, or leave them as `None` (the default). When `None`,
+  `stats.get_stats` samples `config.STATS_SAMPLE_FRACTION` (5% default) of
+  the train split with seed `config.STATS_SAMPLE_SEED`, computes per-channel
+  mean/std, and caches the result as JSON under `cache/stats_<name>.json`.
   Default `DATASETS` in `config.py` pass `None` for both shipped datasets;
   `IMAGENET_MEAN`/`IMAGENET_STD` remain in `config.py` so a spec can be
-  pinned to fixed constants when wanted. `build_*_dataset` calls
-  `get_stats(spec)` per spec, then `ConcatDataset`s them. Note: because
-  we compute stats *after* the same resize used at train time, the std
-  comes out higher than canonical ImageNet (~0.27 vs 0.229) — that's
-  expected and consistent with the input distribution the model sees.
-  Changing `STATS_SAMPLE_FRACTION` needs `--invalidate-cache`; the cache
-  file doesn't track which fraction produced it.
+  pinned to fixed constants when wanted. `build_train_dataset` /
+  `build_val_dataset` (in `datasets.py`) call `get_stats(spec)` per spec,
+  then `ConcatDataset` the per-spec parts.
+- **Stats computation** is GPU-accelerated: a `StatsDataset` decodes images
+  via the shared `build_eval_preprocess()` pipeline (Resize → CenterCrop
+  → ToTensor, no Normalize — we're computing the normaliser), workers
+  parallelise decode, the per-batch sum/sum-of-squares reduces on
+  `config.DEVICE` in float32, and accumulation happens on CPU in float64
+  (consumer GPUs are ~1/64 speed for float64). The sample is sorted by
+  path *after* sampling so HDD-backed datasets read in on-disk locality
+  order — without this, random scatter across a 1.2M-file tree thrashes
+  seeks once the OS page cache runs out (~700 img/s → ~150 img/s in the
+  wild). `prefetch_factor=4` keeps each worker's queue deep enough to mask
+  remaining I/O latency. tqdm shows progress in images/s with a
+  per-image `pbar.update(b)`. Changing `STATS_SAMPLE_FRACTION` needs
+  `--invalidate-cache`; the cache file doesn't track which fraction
+  produced it. Stats are computed *after* the resize, so the std comes
+  out higher than canonical ImageNet (~0.27 vs 0.229) — that's expected
+  and consistent with the input distribution the model actually sees.
+  Don't "fix" by hardcoding canonical numbers.
+- **Worker count**: `config.NUM_WORKERS` (default 8) is the single source
+  of truth for DataLoader workers across `train`, `calibrate`, and
+  `stats`. Every CLI exposes `--num-workers` to override per-run. Too many
+  workers make HDDs slower, not faster — drop the number if the bar
+  stalls and CPU usage falls.
 
 ## Ambiguity detection — the key insight
 
@@ -124,8 +142,9 @@ ML-domain code lives at `src/` root; general-purpose helpers live under
 `src/utils/` (a real package, with `__init__.py`).
 
 ```
-config.py         DEVICE, IMAGENET_MEAN/STD, DATASETS (instances), sizes,
-                  STATS_SAMPLE_FRACTION/SEED
+config.py         DEVICE, IMAGENET_MEAN/STD, DATASETS (instances),
+                  INPUT_SIZE/RESIZE_SIZE, STATS_SAMPLE_FRACTION/SEED,
+                  NUM_WORKERS
 constants.py      ROTATIONS, NUM_CLASSES, PROJECT_ROOT, CHECKPOINT_DIR,
                   INDEX_CACHE_DIR — domain constants and static paths
                   depended on by datasets/model/train/infer/utils without
@@ -134,8 +153,11 @@ datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None),
                   ImageLoader (PIL by index), RotationPairDataset (4× wrapper),
                   build_train_dataset / build_val_dataset (call get_stats + the
                   transforms from builders, then ConcatDataset the per-spec parts)
-stats.py          get_stats(spec) — per-dataset channel mean/std, sampled and
-                  cached, or returned from the spec when set explicitly
+stats.py          get_stats(spec) + compute_stats (GPU-accelerated via a
+                  DataLoader + StatsDataset) + sample_files (sorted by path)
+                  + CLI for ad-hoc stats runs. Sampled mean/std cached as
+                  cache/stats_<name>.json; explicit spec.mean/spec.std
+                  bypasses the scan entirely.
 builders.py       build_train_transform, build_eval_preprocess (Resize →
                   CenterCrop → ToTensor; shared with StatsDataset),
                   build_eval_transform (preprocess + Normalize). Transforms
@@ -172,9 +194,14 @@ import DatasetSpec`. No leading-dot relative imports.
 
 ```
 venv/bin/python src/smoke_test.py
-venv/bin/python src/train.py    [--epochs N] [--batch-size N] [--num-workers N] [--invalidate-cache]
+venv/bin/python src/train.py     [--epochs N] [--batch-size N] [--num-workers N] [--invalidate-cache]
 venv/bin/python src/calibrate.py [--checkpoint PATH] [--batch-size N] [--num-workers N] [--invalidate-cache]
+venv/bin/python src/stats.py     [--num-workers N] [--invalidate-cache]
 ```
+
+`stats.py` runs `get_stats` over every entry in `config.DATASETS` and
+prints/cached results. Useful for pre-computing stats before a training
+run so the first epoch isn't waiting on the scan.
 
 ## User's coding preferences (firm)
 
@@ -200,6 +227,14 @@ Strict rules — apply without asking:
 12. **`help=` on every argparse argument.**
 13. **Use `model.train(False)`** for inference mode (the security hook flags
     the other spelling).
+14. **Type-hint-only imports go under `if TYPE_CHECKING:`** with
+    `from __future__ import annotations` at the top. Anything used only in
+    annotations (e.g. `Path`, `Sequence`, `DatasetSpec`) belongs there so
+    the runtime import graph stays minimal.
+15. **Prefer `import module` over `from module import name` when there's a
+    cycle risk.** `import module` only needs `module` to exist in
+    `sys.modules` (even partially loaded), so it survives cycles that
+    `from`-imports break.
 
 ### Splitting rules (learned the hard way)
 
@@ -211,10 +246,18 @@ Strict rules — apply without asking:
 - `DatasetSpec` lives in `datasets.py` alongside the dataset classes that
   consume it — it used to be in `spec.py` but the standalone file was
   one line of dataclass with no other purpose.
-- `ROTATIONS` and `NUM_CLASSES` live in `constants.py`, not `config.py`,
-  so data and model code can import them without dragging in the rest of
-  config (and so config can import data-side types without creating a
-  cycle).
+- `ROTATIONS` / `NUM_CLASSES` / `PROJECT_ROOT` / `CHECKPOINT_DIR` /
+  `INDEX_CACHE_DIR` live in `constants.py`, not `config.py`, so data and
+  model code can import them without dragging in the rest of config (and
+  so config can import data-side types without creating a cycle).
+- `build_train_dataset` / `build_val_dataset` live in `datasets.py`, not
+  `builders.py`. They depend on `stats.get_stats`, and putting them in
+  builders re-created the old builders↔stats cycle. Keeping `builders.py`
+  as transforms-only and letting `datasets.py` own the wiring breaks the
+  cycle while keeping each module honest.
+- Transforms (`build_train_transform`, `build_eval_preprocess`,
+  `build_eval_transform`) live in `builders.py`. Earlier they were in
+  `config.py`; that was wrong — they're functions, not configuration.
 
 ### Anti-patterns the user called out
 
@@ -258,15 +301,39 @@ Strict rules — apply without asking:
   at train time; canonical values are computed on raw full-res pixels.
   Don't "fix" this by hardcoding the canonical numbers — the computed
   ones match the actual input distribution.
+- The transform ordering (PIL augmentations → ToTensor → Normalize →
+  RandomErasing) is intentional. PIL ops can't take tensors, ColorJitter
+  needs values in [0,1] not zero-centred, and RandomErasing's default
+  fill of 0 means "dataset mean" *after* Normalize (a grey patch instead
+  of pure black). Don't reorder.
+- ConvNeXt-V2-Tiny ends in `AdaptiveAvgPool`, so `INPUT_SIZE` is a free
+  knob, not an architectural requirement. 224 is the convention from the
+  pretrained checkpoint we're *not* using; from-scratch training can
+  pick 192/224/256/288 — bigger trades compute for more orientation
+  cues. `RESIZE_SIZE` is just slightly larger than `INPUT_SIZE` so
+  `RandomCrop` has wiggle room (~1.03–1.14× ratio).
+- `stats.py` needs `tqdm`. It's not in the project's torch family deps so
+  add it explicitly to requirements if a fresh venv is being set up.
+- `infer.py` does NOT need to import `image_io` — `predict_image`
+  receives an already-opened `PIL.Image` from the caller, and the caller
+  is responsible for going through `open_rgb` themselves (which registers
+  the JXL handler). Earlier we kept a defensive `import image_io` here
+  for "safety"; it was paranoia and got removed.
 
 ## Outstanding work (as of last session)
 
-- PyTorch is being installed manually by the user (CUDA 12.8 wheels for
-  Blackwell). When done, run `smoke_test.py` to verify the pipeline before
-  launching a real training run.
-- `timm` is not installed yet (waits on torch). `model.py` imports it
-  top-level, so smoke test will fail until timm is installed.
-- No checkpoint exists. First real run goes through `train.py` end-to-end.
+- PyTorch CUDA 12.8 wheels for Blackwell installed by the user manually
+  (not via `pip install torch`). Verify with `smoke_test.py` before
+  kicking off a real training run.
+- `timm` likewise installed manually after torch.
+- `tqdm` is a new dep introduced by `stats.py`. Add to requirements if
+  setting up a fresh venv.
+- No checkpoint exists yet. First real run goes through `train.py`
+  end-to-end.
+- ImageNet stats have been computed once on this machine — wall-clock is
+  ~5 minutes for 5% of the train split at ~215 img/s (HDD-bound after
+  the page cache is exhausted; the path-sort + prefetch tweaks help but
+  there's a hard disk-bandwidth ceiling).
 - ONNX export is planned but deliberately deferred.
 - Ambiguity-validation set (DTD textures, COCO circular subjects, Perlin
   noise) is not yet built. Needed for tuning the 4-rotation consistency
