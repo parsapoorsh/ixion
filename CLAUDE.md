@@ -74,11 +74,14 @@ noise-filtering pass — both were over-engineered.
 - **Rotation pairs**: each image yields 4 samples deterministically.
   `len(dataset) = 4 * n_images`, sample `i` → `(img_idx, rot_idx) = divmod(i, 4)`.
   Guarantees balanced classes and full coverage every epoch.
-- **Per-dataset normalization**: each `DatasetSpec` carries its own
-  `mean`/`std`. `build_*_dataset` builds one `RotationPairDataset` per spec
-  with that spec's transform, then `ConcatDataset`s them. Currently both
-  datasets use ImageNet stats (because the backbone is ImageNet-pretrained),
-  but the plumbing supports differing stats.
+- **Per-dataset normalization**: each `DatasetSpec` can carry an explicit
+  `mean`/`std`, or leave them as `None`. When `None`, `stats.get_stats`
+  samples ~5000 train images for that spec, computes per-channel mean/std
+  in float64, and caches the result as JSON under `cache/stats_<name>.json`.
+  Default `DATASETS` in `config.py` pass `None` for both shipped datasets;
+  `IMAGENET_MEAN`/`IMAGENET_STD` remain in `config.py` so a spec can be
+  pinned to fixed constants when wanted. `build_*_dataset` calls
+  `get_stats(spec)` per spec, then `ConcatDataset`s them.
 
 ## Ambiguity detection — the key insight
 
@@ -104,6 +107,8 @@ config.py      DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
 index.py       index_files(name, roots) + clear_cache() — filesystem scan with
                on-disk JSON cache
 datasets.py    ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
+stats.py       get_stats(spec) — per-dataset channel mean/std, sampled and
+               cached, or returned from the spec when set explicitly
 builders.py    build_train_transform, build_eval_transform,
                build_train_dataset, build_val_dataset
 model.py       RotationModel (ConvNeXt-V2-Tiny + head + temperature)
