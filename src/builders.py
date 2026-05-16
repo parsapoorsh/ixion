@@ -10,10 +10,9 @@ from torch.utils.data import ConcatDataset
 from torchvision import transforms as T
 
 import config
-from datasets import ImageLoader, RotationPairDataset
-from utils.index import index_files
-from spec import DatasetSpec
+from datasets import DatasetSpec, ImageLoader, RotationPairDataset
 from stats import get_stats
+from utils.index import index_files
 
 
 def build_train_transform(

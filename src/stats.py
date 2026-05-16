@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from spec import DatasetSpec
+    from datasets import DatasetSpec
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from spec import DatasetSpec
+from datasets import DatasetSpec
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
