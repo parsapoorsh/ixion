@@ -140,7 +140,7 @@ def train_one_run(cfg: TrainConfig) -> None:
     torch.manual_seed(cfg.seed)
     train_loader, val_loader = build_loaders(cfg)
 
-    model = RotationModel(pretrained=True).to(config.DEVICE)
+    model = RotationModel(pretrained=False).to(config.DEVICE)
     ema = ModelEMA(model, decay=cfg.ema_decay)
 
     param_groups = model.param_groups(

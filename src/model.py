@@ -13,7 +13,7 @@ import config
 
 
 class RotationModel(nn.Module):
-    def __init__(self, pretrained: bool = True, drop_rate: float = 0.2) -> None:
+    def __init__(self, pretrained: bool = False, drop_rate: float = 0.2) -> None:
         super().__init__()
         self.backbone = timm.create_model(
             "convnextv2_tiny.fcmae_ft_in22k_in1k",

@@ -10,10 +10,9 @@ from spec import DatasetSpec
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# ImageNet normalization is the canonical choice for any model fine-tuned from
-# ImageNet-pretrained weights. Both datasets use it because the backbone is
-# pretrained on ImageNet; override per-dataset if you swap to a backbone
-# pretrained on a different distribution.
+# ImageNet normalization is the conventional choice for ImageNet-style inputs
+# even when training from scratch. Override per-dataset if a dataset has a
+# materially different pixel-statistics distribution.
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 

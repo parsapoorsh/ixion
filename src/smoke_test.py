@@ -1,6 +1,6 @@
 """Wiring sanity check on the example images.
 
-Builds the model from pretrained weights (no training), runs a synthetic
+Builds the model with random init (no training), runs a synthetic
 forward/backward through the training transforms, and runs the 4-rotation
 consistency inference on the examples/ directory. Catches import errors,
 shape bugs, JXL/PIL/transform issues, and obvious model-side problems before
@@ -25,7 +25,7 @@ def main() -> None:
     setup_logging()
     logger.info("device = %s", config.DEVICE)
 
-    model = RotationModel(pretrained=True).to(config.DEVICE)
+    model = RotationModel(pretrained=False).to(config.DEVICE)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info("model params = %.2f M", n_params)
 
