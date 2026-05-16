@@ -19,7 +19,7 @@ from torch.utils.data import Dataset
 from torchvision.transforms import functional as TF
 
 import config
-from image_io import open_rgb
+from utils.image_io import open_rgb
 
 
 class ImageLoader(Dataset):

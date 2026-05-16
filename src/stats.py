@@ -22,7 +22,7 @@ from torchvision.transforms import functional as TF
 from tqdm import tqdm
 
 import config
-from image_io import open_rgb
+from utils.image_io import open_rgb
 from index import index_files
 from logsetup import setup_logging
 

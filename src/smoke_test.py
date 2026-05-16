@@ -13,7 +13,7 @@ import torch
 
 import config
 from config import build_train_transform
-from image_io import open_rgb
+from utils.image_io import open_rgb
 from infer import predict_image
 from logsetup import setup_logging
 from model import RotationModel
