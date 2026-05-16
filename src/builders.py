@@ -1,18 +1,14 @@
-"""Factories for transforms and concatenated rotation-pair datasets.
+"""Transform factories for training and evaluation.
 
-Transforms read INPUT_SIZE/RESIZE_SIZE from config but live here so the
-augmentation policy stays next to the dataset wiring that consumes it.
+Transforms read INPUT_SIZE/RESIZE_SIZE from config. Dataset wiring (the
+build_*_dataset functions that actually use these transforms) lives in
+datasets.py so this module has no dependency on stats or filesystem
+indexing, keeping the import graph acyclic.
 """
 
-from typing import Sequence
-
-from torch.utils.data import ConcatDataset
 from torchvision import transforms as T
 
 import config
-from datasets import DatasetSpec, ImageLoader, RotationPairDataset
-from stats import get_stats
-from utils.index import index_files
 
 
 def build_train_transform(
@@ -31,38 +27,23 @@ def build_train_transform(
     ])
 
 
+def build_eval_preprocess() -> T.Compose:
+    """Resize → CenterCrop → ToTensor — the pre-Normalize half of the eval
+    transform. Shared with stats computation, which needs the same shape
+    and dtype pipeline but cannot normalise (it's computing the normaliser).
+    """
+    return T.Compose([
+        T.Resize(config.RESIZE_SIZE),
+        T.CenterCrop(config.INPUT_SIZE),
+        T.ToTensor(),
+    ])
+
+
 def build_eval_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
 ) -> T.Compose:
     return T.Compose([
-        T.Resize(config.RESIZE_SIZE),
-        T.CenterCrop(config.INPUT_SIZE),
-        T.ToTensor(),
+        build_eval_preprocess(),
         T.Normalize(mean, std),
     ])
-
-
-def build_train_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
-    """One RotationPairDataset per source dataset, normalized with that source's
-    own mean/std, then concatenated. Each image is normalized by the stats it
-    was registered with, which keeps the input distribution to the model
-    consistent in mean=0/std=1 space even when sources differ.
-    """
-    parts: list[RotationPairDataset] = []
-    for spec in datasets:
-        files = index_files(f"train_{spec.name}", [spec.train])
-        stats = get_stats(spec)
-        transform = build_train_transform(stats.mean, stats.std)
-        parts.append(RotationPairDataset(ImageLoader(files), transform))
-    return ConcatDataset(parts)
-
-
-def build_val_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
-    parts: list[RotationPairDataset] = []
-    for spec in datasets:
-        files = index_files(f"val_{spec.name}", [spec.val])
-        stats = get_stats(spec)
-        transform = build_eval_transform(stats.mean, stats.std)
-        parts.append(RotationPairDataset(ImageLoader(files), transform))
-    return ConcatDataset(parts)

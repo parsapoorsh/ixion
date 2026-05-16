@@ -1,4 +1,5 @@
-"""Image loading and the rotation pair wrapper.
+"""DatasetSpec, image loading, the rotation pair wrapper, and the
+concatenated train/val dataset builders.
 
 Image opening is delegated to image_io.open_rgb so the JXL handler and the
 truncated-image tolerance are registered in exactly one place.
@@ -6,8 +7,8 @@ truncated-image tolerance are registered in exactly one place.
 Each base image yields four training samples — one per rotation in
 {0, 90, 180, 270}. The sample index is (image_idx, rotation_idx), so each
 epoch sees a perfectly class-balanced view of the data with full coverage of
-every rotation. Filesystem scanning lives in index.py; transforms and dataset
-wiring live in builders.py.
+every rotation. Filesystem scanning lives in utils.index; transform recipes
+live in builders.py.
 """
 
 from dataclasses import dataclass
@@ -16,11 +17,14 @@ from typing import Sequence
 
 import torch
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import ConcatDataset, Dataset
 from torchvision.transforms import functional as TF
 
 import constants
+import stats
+from builders import build_eval_transform, build_train_transform
 from utils.image_io import open_rgb
+from utils.index import index_files
 
 
 @dataclass(frozen=True)
@@ -77,3 +81,28 @@ class RotationPairDataset(Dataset):
         if rot_idx != 0:
             img = TF.rotate(img, constants.ROTATIONS[rot_idx], expand=False)
         return self.transform(img), rot_idx
+
+
+def build_train_dataset(specs: Sequence[DatasetSpec]) -> ConcatDataset:
+    """One RotationPairDataset per source dataset, normalized with that source's
+    own mean/std, then concatenated. Each image is normalized by the stats it
+    was registered with, which keeps the input distribution to the model
+    consistent in mean=0/std=1 space even when sources differ.
+    """
+    parts: list[RotationPairDataset] = []
+    for spec in specs:
+        files = index_files(f"train_{spec.name}", [spec.train])
+        channel_stats = stats.get_stats(spec)
+        transform = build_train_transform(channel_stats.mean, channel_stats.std)
+        parts.append(RotationPairDataset(ImageLoader(files), transform))
+    return ConcatDataset(parts)
+
+
+def build_val_dataset(specs: Sequence[DatasetSpec]) -> ConcatDataset:
+    parts: list[RotationPairDataset] = []
+    for spec in specs:
+        files = index_files(f"val_{spec.name}", [spec.val])
+        channel_stats = stats.get_stats(spec)
+        transform = build_eval_transform(channel_stats.mean, channel_stats.std)
+        parts.append(RotationPairDataset(ImageLoader(files), transform))
+    return ConcatDataset(parts)

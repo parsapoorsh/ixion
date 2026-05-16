@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING
 
 import torch
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms as T
 from tqdm import tqdm
 
 import config
 import constants
+from builders import build_eval_preprocess
 from utils.image_io import open_rgb
 from utils.index import index_files
 from utils.logsetup import setup_logging
@@ -131,11 +131,7 @@ class StatsDataset(Dataset):
 
     def __init__(self, files: Sequence[Path]) -> None:
         self.files = files
-        self.transform = T.Compose([
-            T.Resize(config.RESIZE_SIZE),
-            T.CenterCrop(config.INPUT_SIZE),
-            T.ToTensor(),
-        ])
+        self.transform = build_eval_preprocess()
 
     def __len__(self) -> int:
         return len(self.files)
