@@ -110,8 +110,11 @@ noise-filtering pass — both were over-engineered.
   path *after* sampling so HDD-backed datasets read in on-disk locality
   order — without this, random scatter across a 1.2M-file tree thrashes
   seeks once the OS page cache runs out (~700 img/s → ~150 img/s in the
-  wild). `prefetch_factor=4` keeps each worker's queue deep enough to mask
-  remaining I/O latency. tqdm shows progress in images/s with a
+  wild). `prefetch_factor=constants.PREFETCH_FACTOR` (default 4) keeps each
+  worker's queue deep enough to mask remaining I/O latency; `train` exposes
+  `--prefetch-factor` to widen it further when the GPU shows the
+  bursty-0-to-100 utilization pattern that signals data starvation.
+  tqdm shows progress in images/s with a
   per-image `pbar.update(b)`. Changing `STATS_SAMPLE_FRACTION` needs
   `--invalidate-cache`; the cache file doesn't track which fraction
   produced it. Stats are computed *after* the resize, so the std comes
@@ -123,6 +126,16 @@ noise-filtering pass — both were over-engineered.
   `stats`. Every CLI exposes `--num-workers` to override per-run. Too many
   workers make HDDs slower, not faster — drop the number if the bar
   stalls and CPU usage falls.
+- **Checkpointing**: `train.py` dumps `checkpoints/epoch_NNN.pt` after every
+  epoch (both raw and EMA state dicts, plus `epoch` and the latest val
+  `acc`). Earlier we kept only `best.pt` and `last.pt`; switched to
+  per-epoch because long runs benefit from being able to resume or bisect
+  from any point, and a "best" by val acc is too easy to spike on noise.
+- **Logging**: `utils.logsetup.setup_logging()` attaches *two* handlers to
+  the root logger — the existing tqdm-aware console handler and a
+  `FileHandler` writing to `logs/YYYY-MM-DD_HH-MM-SS.txt`
+  (`constants.LOGS_DIR`). Both share one `Formatter` with full date+time
+  so a multi-day run's lines stay self-dating. `logs/` is gitignored.
 
 ## Ambiguity detection — the key insight
 
@@ -155,12 +168,12 @@ ML-domain code lives at `src/` root; general-purpose helpers live under
 
 ```
 config.py         DEVICE, IMAGENET_MEAN/STD, DATASETS (instances),
-                  INPUT_SIZE/RESIZE_SIZE, STATS_SAMPLE_FRACTION/SEED,
-                  NUM_WORKERS
+                  INPUT_SIZE/RESIZE_SIZE, STATS_SAMPLE_FRACTION/SEED
 constants.py      ROTATIONS, NUM_CLASSES, PROJECT_ROOT, CHECKPOINT_DIR,
-                  INDEX_CACHE_DIR — domain constants and static paths
-                  depended on by datasets/model/train/infer/utils without
-                  going through config
+                  INDEX_CACHE_DIR, LOGS_DIR, NUM_WORKERS, PREFETCH_FACTOR
+                  — domain constants and static paths depended on by
+                  datasets/model/train/infer/utils without going through
+                  config
 datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None),
                   ImageLoader (PIL by index), RotationPairDataset (4× wrapper),
                   build_train_dataset / build_val_dataset (call get_stats + the
@@ -192,7 +205,9 @@ utils/
                   lzma-compressed trie JSON
   logsetup.py     setup_logging() — shared logger config; installs a
                   TqdmLoggingHandler so log records route through
-                  tqdm.write and don't clobber an active progress bar
+                  tqdm.write and don't clobber an active progress bar,
+                  and a FileHandler that mirrors everything to
+                  logs/YYYY-MM-DD_HH-MM-SS.txt
 ```
 
 **Dependency direction**: `utils.* + constants → builders →
@@ -210,7 +225,7 @@ import DatasetSpec`. No leading-dot relative imports.
 
 ```
 venv/bin/python src/smoke_test.py
-venv/bin/python src/train.py     [--epochs N] [--batch-size N] [--num-workers N] [--invalidate-cache]
+venv/bin/python src/train.py     [--epochs N] [--batch-size N] [--num-workers N] [--prefetch-factor N] [--invalidate-cache]
 venv/bin/python src/calibrate.py [--checkpoint PATH] [--batch-size N] [--num-workers N] [--invalidate-cache]
 venv/bin/python src/stats.py     [--num-workers N] [--invalidate-cache]
 ```
