@@ -49,7 +49,7 @@ class TrainConfig:
     grad_clip: float = 1.0
     ema_decay: float = 0.9999
     log_every: int = 50
-    val_every_epoch: int = 1
+    val_interval_epochs: int = 1
     seed: int = 42
 
 
@@ -235,7 +235,7 @@ def train_one_run(cfg: TrainConfig) -> None:
             epoch, dt, running_seen / dt,
         )
 
-        if (epoch + 1) % cfg.val_every_epoch == 0:
+        if (epoch + 1) % cfg.val_interval_epochs == 0:
             result = run_validation(ema.module, val_loader)
             logger.info(
                 "validation epoch %d loss=%.4f acc=%.4f per_class=%s",
