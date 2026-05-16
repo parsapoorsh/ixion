@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 import config
+import constants
 import stats
 from builders import build_val_dataset
 from calibration import expected_calibration_error, fit_temperature, gather_logits
@@ -27,7 +28,7 @@ def main() -> None:
     p.add_argument(
         "--checkpoint",
         type=Path,
-        default=config.CHECKPOINT_DIR / "best.pt",
+        default=constants.CHECKPOINT_DIR / "best.pt",
         help="path to a trained checkpoint (defaults to checkpoints/best.pt)",
     )
     p.add_argument(

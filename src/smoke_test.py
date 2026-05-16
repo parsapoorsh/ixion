@@ -12,6 +12,7 @@ import logging
 import torch
 
 import config
+import constants
 from builders import build_train_transform
 from utils.image_io import open_rgb
 from infer import predict_image
@@ -30,7 +31,7 @@ def main() -> None:
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info("model params = %.2f M", n_params)
 
-    eg_dir = config.PROJECT_ROOT / "examples"
+    eg_dir = constants.PROJECT_ROOT / "examples"
     sample_files = sorted(eg_dir.glob("*"))
     assert sample_files, f"no example images in {eg_dir}"
 

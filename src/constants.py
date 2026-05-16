@@ -6,5 +6,13 @@ of config — keeping the import graph free of cycles when config grows
 to import data-side types.
 """
 
+from pathlib import Path
+
 ROTATIONS = (0, 90, 180, 270)
 NUM_CLASSES = len(ROTATIONS)
+
+# Path layout. PROJECT_ROOT resolves via this file's location, so it
+# stays correct as long as constants.py lives directly under src/.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
+INDEX_CACHE_DIR = PROJECT_ROOT / "cache"

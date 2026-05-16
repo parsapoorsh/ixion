@@ -220,11 +220,11 @@ def train_one_run(cfg: TrainConfig) -> None:
             )
             if result.acc > best_acc:
                 best_acc = result.acc
-                ckpt = config.CHECKPOINT_DIR / "best.pt"
+                ckpt = constants.CHECKPOINT_DIR / "best.pt"
                 save_checkpoint(ckpt, model, ema, extras={"epoch": epoch, "acc": best_acc})
                 logger.info("saved %s (acc=%.4f)", ckpt, best_acc)
 
-    last_path = config.CHECKPOINT_DIR / "last.pt"
+    last_path = constants.CHECKPOINT_DIR / "last.pt"
     save_checkpoint(last_path, model, ema)
     logger.info("done. best val acc = %.4f, last ckpt = %s", best_acc, last_path)
 

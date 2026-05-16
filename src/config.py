@@ -34,10 +34,6 @@ DATASETS = [
     ),
 ]
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
-INDEX_CACHE_DIR = PROJECT_ROOT / "cache"
-
 INPUT_SIZE = 224
 RESIZE_SIZE = 232
 

@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import config
+import constants
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 
 def clear_cache() -> None:
     """Delete every cached index file under the index cache directory."""
-    if not config.INDEX_CACHE_DIR.exists():
+    if not constants.INDEX_CACHE_DIR.exists():
         return
-    for f in config.INDEX_CACHE_DIR.glob("index_*.json*"):
+    for f in constants.INDEX_CACHE_DIR.glob("index_*.json*"):
         f.unlink()
         logger.info("removed cached index %s", f.name)
 
@@ -47,8 +47,8 @@ def index_files(name: str, roots: Sequence[Path]) -> "PathList":
     No extension filter — the dataset directories are expected to contain only
     images, and PIL will raise at load time on anything it can't decode.
     """
-    config.INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache = config.INDEX_CACHE_DIR / f"index_{name}.json.xz"
+    constants.INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache = constants.INDEX_CACHE_DIR / f"index_{name}.json.xz"
     if cache.exists():
         with lzma.open(cache, "rt") as f:
             trie = json.load(f)

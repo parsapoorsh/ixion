@@ -23,6 +23,7 @@ from torchvision import transforms as T
 from tqdm import tqdm
 
 import config
+import constants
 from utils.image_io import open_rgb
 from utils.index import index_files
 from utils.logsetup import setup_logging
@@ -44,9 +45,9 @@ class ChannelStats:
 
 def clear_cache() -> None:
     """Delete every cached stats_*.json under the cache directory."""
-    if not config.INDEX_CACHE_DIR.exists():
+    if not constants.INDEX_CACHE_DIR.exists():
         return
-    for f in config.INDEX_CACHE_DIR.glob("stats_*.json"):
+    for f in constants.INDEX_CACHE_DIR.glob("stats_*.json"):
         f.unlink()
         logger.info("removed cached stats %s", f.name)
 
@@ -63,8 +64,8 @@ def get_stats(
     if spec.mean is not None and spec.std is not None:
         return ChannelStats(mean=spec.mean, std=spec.std)
 
-    config.INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache = config.INDEX_CACHE_DIR / f"stats_{spec.name}.json"
+    constants.INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache = constants.INDEX_CACHE_DIR / f"stats_{spec.name}.json"
     if cache.exists():
         with cache.open() as f:
             payload = json.load(f)
