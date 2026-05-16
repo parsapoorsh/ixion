@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 import config
+import stats
 from builders import build_val_dataset
 from calibration import expected_calibration_error, fit_temperature, gather_logits
 from index import clear_cache
@@ -44,12 +45,13 @@ def main() -> None:
     p.add_argument(
         "--invalidate-cache",
         action="store_true",
-        help="delete cached file-index JSONs before indexing",
+        help="delete cached file-index and per-dataset stats JSONs before running",
     )
     args = p.parse_args()
 
     if args.invalidate_cache:
         clear_cache()
+        stats.clear_cache()
 
     model = RotationModel(pretrained=False).to(config.DEVICE)
     state = torch.load(args.checkpoint, map_location=config.DEVICE)
