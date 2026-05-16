@@ -1,8 +1,14 @@
 """ConvNeXt-V2-Tiny backbone + 4-class rotation head.
 
-The temperature parameter is stored on the module so calibrated inference and
-the ONNX export can use a single forward signature. Temperature is fit
-post-hoc (frozen during training).
+Trained from scratch — ``pretrained=False`` is the default. The timm model
+id still references the ``.fcmae_ft_in22k_in1k`` variant because that's the
+architecture we want; the flag just skips loading the weights. Backbone and
+head learn at the same rate (no layer-wise LR split, since both are
+randomly initialised).
+
+The temperature parameter is stored on the module so calibrated inference
+and the eventual ONNX export can use a single forward signature.
+Temperature is fit post-hoc on the val set (frozen during training).
 """
 
 import timm
