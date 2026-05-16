@@ -11,7 +11,7 @@ from torch.utils.data import ConcatDataset
 
 from config import build_eval_transform, build_train_transform
 from datasets import ImageLoader, RotationPairDataset
-from index import index_files
+from utils.index import index_files
 from spec import DatasetSpec
 from stats import get_stats
 

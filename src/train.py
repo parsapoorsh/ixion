@@ -23,7 +23,7 @@ import config
 import stats
 from builders import build_train_dataset, build_val_dataset
 from ema import ModelEMA
-from index import clear_cache
+from utils.index import clear_cache
 from utils.logsetup import setup_logging
 from model import RotationModel
 
