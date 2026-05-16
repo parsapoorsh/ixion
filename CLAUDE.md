@@ -134,6 +134,15 @@ This is a structural test, not a confidence score, and is far more reliable
 than entropy thresholding for the grass/circle case. It costs 4× inference,
 which is fine for batch processing 500k photos.
 
+`Prediction.confidence_pct` carries a continuous companion to the
+categorical label: the maximum of the rotation-equivariant posterior. For
+each candidate source rotation `s`, average the model's probability across
+views (view `i`'s probability for source `s` is `probs[i, (s + i) % 4]`),
+take the max, scale to [0, 100]. Strictly more informative than the
+4-bucket vote share — use it for ranking or thresholding when the
+categorical confident/weak/ambiguous label is too coarse. The categorical
+label still drives the abstention decision (whether `rotation` is None).
+
 Entropy + temperature scaling exists as a calibrated tiebreaker.
 
 ## File layout (src/)
@@ -164,7 +173,9 @@ builders.py       build_train_transform, build_eval_preprocess (Resize →
                   only — no stats / index / DatasetSpec dependency.
 model.py          RotationModel (ConvNeXt-V2-Tiny + head + temperature)
 ema.py            ModelEMA — deepcopy + per-step weight averaging
-infer.py          Prediction dataclass + predict_image (4-rotation consistency)
+infer.py          Prediction dataclass (rotation, confidence categorical,
+                  confidence_pct continuous, votes, entropy) +
+                  predict_image (4-rotation consistency + posterior averaging)
 train.py          TrainConfig, ValidationResult, run_validation,
                   save_checkpoint, cosine_with_warmup, set_lr, train_one_run, main
 calibrate.py      gather_logits + fit_temperature (LBFGS) +
