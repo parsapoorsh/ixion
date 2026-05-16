@@ -68,8 +68,9 @@ def main() -> None:
             std=stats.std,
         )
         logger.info(
-            "%-25s rot=%s conf=%-9s votes=%s entropy=%.3f",
-            p.name, pred.rotation, pred.confidence, pred.votes, pred.entropy,
+            "%-25s rot=%s conf=%-9s (%.1f%%) votes=%s entropy=%.3f",
+            p.name, pred.rotation, pred.confidence, pred.confidence_pct,
+            pred.votes, pred.entropy,
         )
 
 

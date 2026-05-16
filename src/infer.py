@@ -27,6 +27,7 @@ class Prediction:
     """Result of running the consistency-aware inference on one image."""
     rotation: int | None         # 0/90/180/270, or None when ambiguous
     confidence: str              # "confident" | "weak" | "ambiguous"
+    confidence_pct: float        # posterior probability of the winning rotation, in [0, 100]
     votes: tuple[int, int, int, int]  # implied rotation from each view (degrees)
     entropy: float               # mean softmax entropy across the 4 views
 
@@ -74,10 +75,23 @@ def predict_image(
     else:
         conf = "ambiguous"
 
+    # Rotation-equivariant posterior: from view i, the model's probability for
+    # source rotation s is probs[i, (s + i) % 4]. Averaging across views gives
+    # a calibrated-ish posterior over the source rotation, and its maximum is
+    # the confidence we report. Strictly more informative than the 4-bucket
+    # vote share, and consistent with it (the argmax matches `top` in the
+    # confident case).
+    n = constants.NUM_CLASSES
+    posterior = torch.stack(
+        [probs[i].roll(-i, dims=0) for i in range(n)]
+    ).mean(dim=0)
+    confidence_pct = float(posterior.max().item()) * 100.0
+
     mean_entropy = float(softmax_entropy(probs).mean().item())
     return Prediction(
         rotation=constants.ROTATIONS[top] if conf != "ambiguous" else None,
         confidence=conf,
+        confidence_pct=confidence_pct,
         votes=votes_deg,
         entropy=mean_entropy,
     )
