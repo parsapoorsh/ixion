@@ -25,25 +25,31 @@ real-time.
 
 ## Model architecture
 
-- **Backbone**: `convnextv2_tiny.fcmae_ft_in22k_in1k` from timm. 28M params,
-  ~83% ImageNet Top-1. Chosen over EfficientNet-B1 once the user OK'd the
-  size: better features for ambiguous edge cases.
+- **Backbone**: `convnextv2_tiny` from timm, **trained from scratch** (no
+  pretrained weights). 28M params. Architecture chosen over EfficientNet-B1
+  once the user OK'd the size: better capacity for ambiguous edge cases.
+  The timm model id still references the `.fcmae_ft_in22k_in1k` variant
+  because we want that architecture; `pretrained=False` skips the weights.
 - **Head**: `AdaptiveAvgPool → LayerNorm(768) → Dropout(0.2) → Linear(768, 4)`.
 - **Temperature buffer**: `register_buffer("temperature", ones(1))` for
   post-hoc calibration. Frozen during training; fit on val set after.
-- **Param groups**: layer-wise LR. Backbone at 2e-4, head at 2e-3 (10×).
+- **Single LR**: backbone and head learn at the same rate (random init, no
+  reason for a layer-wise split). Earlier the recipe used backbone 2e-4 /
+  head 2e-3; that ratio is now gone.
 
 ## Training recipe
 
-Single phase, 8 epochs. No frozen warm-up phase, no noise-filtering pass —
-both were over-engineered.
+Single phase, 100 epochs from random init. No frozen warm-up phase, no
+noise-filtering pass — both were over-engineered.
 
 - Batch 128, BF16 autocast, AdamW (β=0.9/0.999), weight_decay 0.05
-- Cosine LR with 500-step linear warmup
+- LR 1e-3, cosine schedule with 5-epoch linear warmup
 - Label smoothing 0.1 — handles the ~1% wrong-orientation images in ImageNet
 - EMA decay 0.9999, evaluated and checkpointed off the EMA weights
 - Gradient clip at norm=1.0
-- Wall-clock estimate: ~9 hours for 8 epochs on the 5060 Ti
+- Wall-clock estimate: ~5 days for 100 epochs on the 5060 Ti (extrapolated
+  from the earlier ~9h-for-8-epochs fine-tune estimate; verify on first run
+  and adjust)
 
 ### Augmentations — be careful here
 
