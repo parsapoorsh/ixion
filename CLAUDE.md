@@ -65,10 +65,12 @@ noise-filtering pass — both were over-engineered.
 
 - **Sources**: ImageNet ILSVRC2017 (`.../CLS-LOC/{train,val}`) + COCO 2017
   (`.../coco/{train2017,val2017}`).
-- **Format**: JPEG-XL (`.jxl`). `import pillow_jxl` auto-registers a PIL
-  handler so `PIL.Image.open` decodes transparently. The directories may
-  also contain other formats — do **not** hard-code `.jxl` anywhere, just
-  read every file and let PIL fail at decode if anything's wrong.
+- **Format**: JPEG-XL (`.jxl`). All image opening goes through
+  `image_io.open_rgb`, which registers the `pillow_jxl` handler and enables
+  truncated-image tolerance in one place. Don't call `PIL.Image.open`
+  directly — use `open_rgb` so new modules can't silently miss either
+  side effect. Directories may also contain other formats; do **not**
+  hard-code `.jxl` anywhere, let PIL fail at decode if anything's wrong.
 - **File index**: scanned once per (split, dataset) and cached as JSON under
   `cache/`. CLI flag `--invalidate-cache` deletes the JSONs.
 - **Rotation pairs**: each image yields 4 samples deterministically.
@@ -107,6 +109,8 @@ config.py      DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
                build_train_transform, build_eval_transform
 index.py       index_files(name, roots) + clear_cache() — filesystem scan with
                on-disk JSON cache
+image_io.py    open_rgb(path) — single entry point for opening images;
+               registers the JXL handler and enables truncated-image tolerance
 datasets.py    ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
 stats.py       get_stats(spec) — per-dataset channel mean/std, sampled and
                cached, or returned from the spec when set explicitly
@@ -199,9 +203,10 @@ Strict rules — apply without asking:
 - **`ImageList` was renamed to `ImageLoader`** — don't go back.
 - The cache directory is `cache/` (no leading dot). Earlier it was `.cache/`
   which collided with the gitignore Python template.
-- `pillow-jxl-plugin` registers on import as a side effect. The `import
-  pillow_jxl` line in `datasets.py` and `infer.py` is **not unused** — keep
-  the `# noqa: F401` comment.
+- `pillow-jxl-plugin` registers on import as a side effect. That import now
+  lives **only** in `image_io.py` (with a `# noqa: F401`). Don't add it
+  back to other modules — use `image_io.open_rgb` instead, which is the
+  whole reason that file exists.
 - `RandomResizedCrop` with low scale (< ~0.7) can crop out all orientation
   cues. Keep crops mild.
 
