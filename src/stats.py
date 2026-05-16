@@ -104,10 +104,20 @@ def sample_files(
     n: int,
     seed: int,
 ) -> list[Path]:
+    """Deterministic uniform sample, returned in *path-sorted* order.
+
+    Sorting after sampling keeps the same set of files but reads them in
+    on-disk locality order — without it, scattered seeks across a 1.2M
+    file tree on a spinning disk stall workers once the page cache runs
+    out (~700 img/s → ~150 img/s in the wild).
+    """
     if len(files) <= n:
-        return list(files)
-    rng = random.Random(seed)
-    return rng.sample(files, n)
+        sampled = list(files)
+    else:
+        rng = random.Random(seed)
+        sampled = rng.sample(files, n)
+    sampled.sort()
+    return sampled
 
 
 class StatsDataset(Dataset):
@@ -165,6 +175,7 @@ def compute_stats(
         collate_fn=stats_collate,
         pin_memory=config.DEVICE.type == "cuda",
         persistent_workers=num_workers > 0,
+        prefetch_factor=4 if num_workers > 0 else None,
     )
 
     sum_c = torch.zeros(3, dtype=torch.float64)
