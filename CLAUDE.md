@@ -103,14 +103,15 @@ Entropy + temperature scaling exists as a calibrated tiebreaker.
 ```
 spec.py        DatasetSpec dataclass (name, train, val, mean, std)
 config.py      DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
-               IMAGENET_MEAN/STD, DATASETS (instances), sizes, ROTATIONS
+               IMAGENET_MEAN/STD, DATASETS (instances), sizes, ROTATIONS,
+               build_train_transform, build_eval_transform
 index.py       index_files(name, roots) + clear_cache() — filesystem scan with
                on-disk JSON cache
 datasets.py    ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
 stats.py       get_stats(spec) — per-dataset channel mean/std, sampled and
                cached, or returned from the spec when set explicitly
-builders.py    build_train_transform, build_eval_transform,
-               build_train_dataset, build_val_dataset
+builders.py    build_train_dataset, build_val_dataset (dataset wiring only;
+               transform builders live in config.py)
 model.py       RotationModel (ConvNeXt-V2-Tiny + head + temperature)
 ema.py         ModelEMA — deepcopy + per-step weight averaging
 logsetup.py    setup_logging() — shared logger config
