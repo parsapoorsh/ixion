@@ -13,6 +13,7 @@ import config
 from datasets import ImageLoader, RotationPairDataset
 from index import index_files
 from spec import DatasetSpec
+from stats import get_stats
 
 
 def build_train_transform(
@@ -52,7 +53,8 @@ def build_train_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     parts: list[RotationPairDataset] = []
     for spec in datasets:
         files = index_files(f"train_{spec.name}", [spec.train])
-        transform = build_train_transform(spec.mean, spec.std)
+        stats = get_stats(spec)
+        transform = build_train_transform(stats.mean, stats.std)
         parts.append(RotationPairDataset(ImageLoader(files), transform))
     return ConcatDataset(parts)
 
@@ -61,6 +63,7 @@ def build_val_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     parts: list[RotationPairDataset] = []
     for spec in datasets:
         files = index_files(f"val_{spec.name}", [spec.val])
-        transform = build_eval_transform(spec.mean, spec.std)
+        stats = get_stats(spec)
+        transform = build_eval_transform(stats.mean, stats.std)
         parts.append(RotationPairDataset(ImageLoader(files), transform))
     return ConcatDataset(parts)

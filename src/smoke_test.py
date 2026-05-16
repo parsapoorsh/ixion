@@ -17,6 +17,7 @@ from builders import build_train_transform
 from infer import predict_image
 from logsetup import setup_logging
 from model import RotationModel
+from stats import get_stats
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,8 @@ def main() -> None:
     assert sample_files, f"no example images in {eg_dir}"
 
     spec = config.DATASETS[0]
-    train_tf = build_train_transform(mean=spec.mean, std=spec.std)
+    stats = get_stats(spec)
+    train_tf = build_train_transform(mean=stats.mean, std=stats.std)
     imgs = [train_tf(Image.open(p).convert("RGB")) for p in sample_files[:4]]
     batch = torch.stack(imgs).to(config.DEVICE)
     labels = torch.tensor([0, 1, 2, 3], device=config.DEVICE)
@@ -61,8 +63,8 @@ def main() -> None:
             model=model,
             img=img,
             device=config.DEVICE,
-            mean=spec.mean,
-            std=spec.std,
+            mean=stats.mean,
+            std=stats.std,
         )
         logger.info(
             "%-25s rot=%s conf=%-9s votes=%s entropy=%.3f",
