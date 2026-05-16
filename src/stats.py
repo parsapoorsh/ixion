@@ -7,6 +7,7 @@ explicit mean/std (e.g. pinned to ImageNet) bypasses all of this and is
 returned as-is.
 """
 
+import argparse
 import json
 import logging
 import random
@@ -16,9 +17,11 @@ from dataclasses import dataclass
 import torch
 from PIL import Image
 from torchvision.transforms import functional as TF
+from tqdm import tqdm
 
 import config
 from index import index_files
+from logsetup import setup_logging
 from spec import DatasetSpec
 
 logger = logging.getLogger(__name__)
@@ -99,7 +102,7 @@ def compute_stats(files) -> ChannelStats:
     sum_c = torch.zeros(3, dtype=torch.float64)
     sum_sq_c = torch.zeros(3, dtype=torch.float64)
 
-    for path in files:
+    for path in tqdm(files, desc="stats", unit="img"):
         try:
             img = Image.open(path).convert("RGB")
         except Exception as exc:
@@ -121,3 +124,45 @@ def compute_stats(files) -> ChannelStats:
         mean=tuple(mean.tolist()),
         std=tuple(std.tolist()),
     )
+
+
+def main() -> None:
+    setup_logging()
+    p = argparse.ArgumentParser(
+        description="Compute per-dataset channel mean/std and cache the result. "
+                    "By default runs every dataset in config.DATASETS.",
+    )
+    p.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="restrict to a single dataset by name (matches DatasetSpec.name)",
+    )
+    p.add_argument(
+        "--invalidate-cache",
+        action="store_true",
+        help="delete cached stats JSONs before recomputing",
+    )
+    args = p.parse_args()
+
+    if args.invalidate_cache:
+        clear_cache()
+
+    if args.dataset is None:
+        specs = list(config.DATASETS)
+    else:
+        specs = [s for s in config.DATASETS if s.name == args.dataset]
+        if not specs:
+            available = ", ".join(s.name for s in config.DATASETS)
+            raise SystemExit(f"no dataset named {args.dataset!r} (available: {available})")
+
+    for spec in specs:
+        stats = get_stats(spec)
+        logger.info(
+            "%s: mean=%s std=%s",
+            spec.name, stats.mean, stats.std,
+        )
+
+
+if __name__ == "__main__":
+    main()
