@@ -66,11 +66,12 @@ noise-filtering pass — both were over-engineered.
 - **Sources**: ImageNet ILSVRC2017 (`.../CLS-LOC/{train,val}`) + COCO 2017
   (`.../coco/{train2017,val2017}`).
 - **Format**: JPEG-XL (`.jxl`). All image opening goes through
-  `image_io.open_rgb`, which registers the `pillow_jxl` handler and enables
-  truncated-image tolerance in one place. Don't call `PIL.Image.open`
-  directly — use `open_rgb` so new modules can't silently miss either
-  side effect. Directories may also contain other formats; do **not**
-  hard-code `.jxl` anywhere, let PIL fail at decode if anything's wrong.
+  `utils.image_io.open_rgb`, which registers the `pillow_jxl` handler and
+  enables truncated-image tolerance in one place. Don't call
+  `PIL.Image.open` directly — use `open_rgb` so new modules can't silently
+  miss either side effect. Directories may also contain other formats; do
+  **not** hard-code `.jxl` anywhere, let PIL fail at decode if anything's
+  wrong.
 - **File index**: scanned once per (split, dataset). The result is collapsed
   into a path *trie* (nested dict, directories as subdicts, files as null
   leaves) and written through `lzma` to `cache/index_<name>.json.xz` — shared
@@ -115,38 +116,44 @@ Entropy + temperature scaling exists as a calibrated tiebreaker.
 
 ## File layout (src/)
 
+ML-domain code lives at `src/` root; general-purpose helpers live under
+`src/utils/` (a real package, with `__init__.py`).
+
 ```
-spec.py        DatasetSpec dataclass (name, train, val, mean, std)
-config.py      DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
-               IMAGENET_MEAN/STD, DATASETS (instances), sizes, ROTATIONS,
-               STATS_SAMPLE_FRACTION/SEED, build_train_transform,
-               build_eval_transform
-index.py       index_files(name, roots) + PathList (sequence view over a
-               path trie) + clear_cache() — filesystem scan cached as
-               lzma-compressed trie JSON
-image_io.py    open_rgb(path) — single entry point for opening images;
-               registers the JXL handler and enables truncated-image tolerance
-datasets.py    ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
-stats.py       get_stats(spec) — per-dataset channel mean/std, sampled and
-               cached, or returned from the spec when set explicitly
-builders.py    build_train_dataset, build_val_dataset (dataset wiring only;
-               transform builders live in config.py)
-model.py       RotationModel (ConvNeXt-V2-Tiny + head + temperature)
-ema.py         ModelEMA — deepcopy + per-step weight averaging
-logsetup.py    setup_logging() — shared logger config
-calibration.py gather_logits, fit_temperature (LBFGS), expected_calibration_error
-train.py       TrainConfig, ValidationResult, run_validation,
-               save_checkpoint, cosine_with_warmup, set_lrs, train_one_run, main
-calibrate.py   CLI: load checkpoint → gather logits → fit T → save
-infer.py       Prediction dataclass + predict_image (4-rotation consistency)
-smoke_test.py  Wiring sanity test on examples/
+config.py         DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
+                  IMAGENET_MEAN/STD, DATASETS (instances), sizes, ROTATIONS,
+                  STATS_SAMPLE_FRACTION/SEED, build_train_transform,
+                  build_eval_transform
+spec.py           DatasetSpec dataclass (name, train, val, mean, std)
+datasets.py       ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
+stats.py          get_stats(spec) — per-dataset channel mean/std, sampled and
+                  cached, or returned from the spec when set explicitly
+builders.py       build_train_dataset, build_val_dataset (dataset wiring only;
+                  transform builders live in config.py)
+model.py          RotationModel (ConvNeXt-V2-Tiny + head + temperature)
+ema.py            ModelEMA — deepcopy + per-step weight averaging
+calibration.py    gather_logits, fit_temperature (LBFGS), expected_calibration_error
+infer.py          Prediction dataclass + predict_image (4-rotation consistency)
+train.py          TrainConfig, ValidationResult, run_validation,
+                  save_checkpoint, cosine_with_warmup, set_lr, train_one_run, main
+calibrate.py      CLI: load checkpoint → gather logits → fit T → save
+smoke_test.py     Wiring sanity test on examples/
+utils/
+  image_io.py     open_rgb(path) — single entry point for opening images;
+                  registers the JXL handler and enables truncated-image tolerance
+  index.py        index_files(name, roots) + PathList (sequence view over a
+                  path trie) + clear_cache() — filesystem scan cached as
+                  lzma-compressed trie JSON
+  logsetup.py     setup_logging() — shared logger config
 ```
 
-**Dependency direction**: `spec → config → index → datasets → builders →
+**Dependency direction**: `utils.* → spec → config → datasets → builders →
 {train, calibrate, infer, smoke_test}`. No cycles.
 
-**Imports are flat** (`from x import y`, not `from .x import y`). Run from
-project root with `venv/bin/python src/<file>.py`. There is no `__init__.py`.
+**Import style**: `src/` is on `sys.path` when a CLI is run from project
+root (`venv/bin/python src/<file>.py`), so absolute imports work — e.g.
+`from utils.image_io import open_rgb`, `import config`, `from spec import
+DatasetSpec`. No leading-dot relative imports.
 
 ## Entry points
 
@@ -168,7 +175,7 @@ Strict rules — apply without asking:
    commit. Always use the configured `git config user.*` — don't override.
 5. **Multi-line function signatures** when there are many args/kwargs.
 6. **Use `logging`, never `print`.** Module-level variable is named `logger`
-   (not `log`). Setup goes through `logsetup.setup_logging()`.
+   (not `log`). Setup goes through `utils.logsetup.setup_logging()`.
 7. **Use `time.monotonic()`** for elapsed-time measurements, not `time.time()`.
 8. **Dataclasses, not dicts**, for structured returns.
 9. **No defaults for things the caller should choose.** e.g. `mean`/`std` are
@@ -219,9 +226,9 @@ Strict rules — apply without asking:
 - The cache directory is `cache/` (no leading dot). Earlier it was `.cache/`
   which collided with the gitignore Python template.
 - `pillow-jxl-plugin` registers on import as a side effect. That import now
-  lives **only** in `image_io.py` (with a `# noqa: F401`). Don't add it
-  back to other modules — use `image_io.open_rgb` instead, which is the
-  whole reason that file exists.
+  lives **only** in `utils/image_io.py` (with a `# noqa: F401`). Don't add
+  it back to other modules — use `utils.image_io.open_rgb` instead, which
+  is the whole reason that file exists.
 - `RandomResizedCrop` with low scale (< ~0.7) can crop out all orientation
   cues. Keep crops mild.
 - `index_files` returns a `PathList`, not a real list. It supports `len()`
