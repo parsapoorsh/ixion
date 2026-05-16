@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader
 import config
 from builders import build_val_dataset
 from calibration import expected_calibration_error, fit_temperature, gather_logits
-from checkpoint import load_state_dict_from_checkpoint
 from logsetup import setup_logging
 from model import RotationModel
 
@@ -31,7 +30,9 @@ def main() -> None:
 
     device = torch.device("cuda")
     model = RotationModel(pretrained=False).to(device)
-    model.load_state_dict(load_state_dict_from_checkpoint(args.checkpoint, device))
+    state = torch.load(args.checkpoint, map_location=device)
+    state_dict = state.get("ema") or state.get("model") or state
+    model.load_state_dict(state_dict)
     model.train(False)
 
     val_ds = build_val_dataset(config.DATASETS)
