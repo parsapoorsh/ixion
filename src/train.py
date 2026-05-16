@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainConfig:
     epochs: int = 100
-    batch_size: int = 128
+    batch_size: int = 64
     num_workers: int = constants.NUM_WORKERS
     lr: float = 1e-3
     weight_decay: float = 0.05
