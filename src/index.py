@@ -18,8 +18,8 @@ import json
 import logging
 import lzma
 import time
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Sequence
 
 import config
 
@@ -80,7 +80,7 @@ def paths_to_trie(paths: Sequence[Path]) -> dict:
     return root
 
 
-class PathList:
+class PathList(Sequence[Path]):
     """Sequence view over a path trie. Random access in O(depth * log branching).
 
     Build once: walks the trie and stores, per internal node, the ordered
@@ -137,5 +137,5 @@ class PathList:
             remaining -= prev
             node = child
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Path]:
         return (self[i] for i in range(self.length))

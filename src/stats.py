@@ -13,6 +13,8 @@ import logging
 import random
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
 
 import torch
 from torchvision.transforms import functional as TF
@@ -85,14 +87,18 @@ def get_stats(spec: DatasetSpec) -> ChannelStats:
     return stats
 
 
-def sample_files(files, n, seed):
+def sample_files(
+    files: Sequence[Path],
+    n: int,
+    seed: int,
+) -> list[Path]:
     if len(files) <= n:
         return list(files)
     rng = random.Random(seed)
     return rng.sample(files, n)
 
 
-def compute_stats(files) -> ChannelStats:
+def compute_stats(files: Sequence[Path]) -> ChannelStats:
     """Per-channel mean/std on a sample, vectorised per image in float64.
 
     Each image is resized to INPUT_SIZE so the cost is bounded and consistent
