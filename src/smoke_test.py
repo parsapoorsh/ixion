@@ -15,18 +15,14 @@ from PIL import Image
 import config
 from builders import build_train_transform
 from infer import predict_image
+from logsetup import setup_logging
 from model import build_model
 
 log = logging.getLogger(__name__)
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
+    setup_logging()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("device = %s", device)
 
