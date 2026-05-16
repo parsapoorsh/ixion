@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from datasets import DatasetSpec
+from spec import DatasetSpec
 
 
 # ImageNet normalization is the canonical choice for any model fine-tuned from

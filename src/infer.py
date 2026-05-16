@@ -21,7 +21,7 @@ from torch import nn
 from torchvision.transforms import functional as TF
 
 import config
-from data import build_eval_transform
+from datasets import build_eval_transform
 from model import build_model
 
 

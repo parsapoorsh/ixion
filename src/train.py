@@ -19,7 +19,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 import config
-from data import build_train_dataset, build_val_dataset
+from datasets import build_train_dataset, build_val_dataset
 from ema import ModelEMA
 from model import build_model
 
