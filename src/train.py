@@ -1,16 +1,15 @@
-"""Single-phase training loop for the rotation detector.
+"""Single-phase training loop.
 
 Run from the project root:
     venv/bin/python src/train.py
 
-Knobs are at the top of main(); kept inline rather than as CLI flags so the
-intended recipe is self-documenting. Override by editing or by importing
-train_one_run() from another script.
+Knobs are on TrainConfig; defaults match the recipe in the project plan. Most
+of the moving pieces (eval, schedule, checkpointing, logging) live in their
+own modules so this file just orchestrates them.
 """
 
 import argparse
 import logging
-import math
 import time
 from dataclasses import dataclass
 
@@ -20,8 +19,12 @@ from torch.utils.data import DataLoader
 
 import config
 from builders import build_train_dataset, build_val_dataset
+from checkpoint import save_checkpoint
 from ema import ModelEMA
+from evaluate import run_validation
+from logsetup import setup_logging
 from model import build_model
+from schedule import cosine_with_warmup, set_lrs
 
 log = logging.getLogger(__name__)
 
@@ -43,53 +46,7 @@ class TrainConfig:
     seed: int = 42
 
 
-def cosine_with_warmup(step: int, total_steps: int, warmup: int) -> float:
-    if step < warmup:
-        return step / max(1, warmup)
-    t = (step - warmup) / max(1, total_steps - warmup)
-    return 0.5 * (1.0 + math.cos(math.pi * t))
-
-
-def set_lrs(optimizer: torch.optim.Optimizer, base_lrs: list[float], scale: float) -> None:
-    for group, base in zip(optimizer.param_groups, base_lrs):
-        group["lr"] = base * scale
-
-
-@torch.no_grad()
-def run_validation(model: nn.Module, loader: DataLoader, device: torch.device) -> dict:
-    model.train(False)
-    correct = torch.zeros(config.NUM_CLASSES, device=device)
-    seen = torch.zeros(config.NUM_CLASSES, device=device)
-    total_loss = 0.0
-    total_n = 0
-    loss_fn = nn.CrossEntropyLoss()
-    for imgs, labels in loader:
-        imgs = imgs.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            logits = model(imgs)
-            loss = loss_fn(logits, labels)
-        preds = logits.argmax(dim=1)
-        for c in range(config.NUM_CLASSES):
-            mask = labels == c
-            seen[c] += mask.sum()
-            correct[c] += (preds[mask] == c).sum()
-        total_loss += loss.item() * imgs.size(0)
-        total_n += imgs.size(0)
-    per_class = (correct / seen.clamp(min=1)).cpu().tolist()
-    overall = (correct.sum() / seen.sum().clamp(min=1)).item()
-    return {
-        "loss": total_loss / max(1, total_n),
-        "acc": overall,
-        "per_class": per_class,
-    }
-
-
-def train_one_run(cfg: TrainConfig) -> None:
-    torch.manual_seed(cfg.seed)
-    device = torch.device("cuda")
-    config.CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-
+def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
     log.info("building datasets...")
     train_ds = build_train_dataset(config.DATASETS)
     val_ds = build_val_dataset(config.DATASETS)
@@ -112,11 +69,23 @@ def train_one_run(cfg: TrainConfig) -> None:
         pin_memory=True,
         persistent_workers=True,
     )
+    return train_loader, val_loader
+
+
+def train_one_run(cfg: TrainConfig) -> None:
+    torch.manual_seed(cfg.seed)
+    device = torch.device("cuda")
+
+    train_loader, val_loader = build_loaders(cfg)
 
     model = build_model(pretrained=True).to(device)
     ema = ModelEMA(model, decay=cfg.ema_decay)
 
-    param_groups = model.param_groups(cfg.backbone_lr, cfg.head_lr, cfg.weight_decay)
+    param_groups = model.param_groups(
+        backbone_lr=cfg.backbone_lr,
+        head_lr=cfg.head_lr,
+        weight_decay=cfg.weight_decay,
+    )
     base_lrs = [g["lr"] for g in param_groups]
     optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
     loss_fn = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
@@ -166,40 +135,30 @@ def train_one_run(cfg: TrainConfig) -> None:
             global_step += 1
 
         dt = time.monotonic() - epoch_start
-        log.info("epoch %d done in %.0fs, throughput %.1f img/s",
-                 epoch, dt, running_seen / dt)
+        log.info(
+            "epoch %d done in %.0fs, throughput %.1f img/s",
+            epoch, dt, running_seen / dt,
+        )
 
         if (epoch + 1) % cfg.val_every_epoch == 0:
-            metrics = run_validation(ema.module, val_loader, device)
+            result = run_validation(ema.module, val_loader, device)
             log.info(
                 "val ep %d loss=%.4f acc=%.4f per_class=%s",
-                epoch, metrics["loss"], metrics["acc"], metrics["per_class"],
+                epoch, result.loss, result.acc, result.per_class,
             )
-            if metrics["acc"] > best_acc:
-                best_acc = metrics["acc"]
-                ckpt_path = config.CHECKPOINT_DIR / "best.pt"
-                torch.save(
-                    {
-                        "model": model.state_dict(),
-                        "ema": ema.state_dict(),
-                        "epoch": epoch,
-                        "acc": best_acc,
-                    },
-                    ckpt_path,
-                )
-                log.info("saved %s (acc=%.4f)", ckpt_path, best_acc)
+            if result.acc > best_acc:
+                best_acc = result.acc
+                ckpt = config.CHECKPOINT_DIR / "best.pt"
+                save_checkpoint(ckpt, model, ema, extras={"epoch": epoch, "acc": best_acc})
+                log.info("saved %s (acc=%.4f)", ckpt, best_acc)
 
     last_path = config.CHECKPOINT_DIR / "last.pt"
-    torch.save({"model": model.state_dict(), "ema": ema.state_dict()}, last_path)
+    save_checkpoint(last_path, model, ema)
     log.info("done. best val acc = %.4f, last ckpt = %s", best_acc, last_path)
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_logging()
     p = argparse.ArgumentParser()
     p.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
