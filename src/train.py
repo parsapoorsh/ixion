@@ -3,13 +3,12 @@
 Run from the project root:
     venv/bin/python src/train.py
 
-Knobs are on TrainConfig; defaults match the recipe in the project plan. Most
-of the moving pieces (eval, schedule, checkpointing, logging) live in their
-own modules so this file just orchestrates them.
+Knobs are on TrainConfig; defaults match the recipe in the project plan.
 """
 
 import argparse
 import logging
+import math
 import time
 from dataclasses import dataclass
 
@@ -19,12 +18,9 @@ from torch.utils.data import DataLoader
 
 import config
 from builders import build_train_dataset, build_val_dataset
-from checkpoint import save_checkpoint
 from ema import ModelEMA
-from evaluate import run_validation
 from logsetup import setup_logging
 from model import RotationModel
-from schedule import cosine_with_warmup, set_lrs
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +40,74 @@ class TrainConfig:
     log_every: int = 50
     val_every_epoch: int = 1
     seed: int = 42
+
+
+@dataclass
+class ValidationResult:
+    loss: float
+    acc: float
+    per_class: list[float]
+
+
+@torch.no_grad()
+def run_validation(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> ValidationResult:
+    model.train(False)
+    correct = torch.zeros(config.NUM_CLASSES, device=device)
+    seen = torch.zeros(config.NUM_CLASSES, device=device)
+    total_loss = 0.0
+    total_n = 0
+    loss_fn = nn.CrossEntropyLoss()
+    for imgs, labels in loader:
+        imgs = imgs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            logits = model(imgs)
+            loss = loss_fn(logits, labels)
+        preds = logits.argmax(dim=1)
+        for c in range(config.NUM_CLASSES):
+            mask = labels == c
+            seen[c] += mask.sum()
+            correct[c] += (preds[mask] == c).sum()
+        total_loss += loss.item() * imgs.size(0)
+        total_n += imgs.size(0)
+    return ValidationResult(
+        loss=total_loss / max(1, total_n),
+        acc=(correct.sum() / seen.sum().clamp(min=1)).item(),
+        per_class=(correct / seen.clamp(min=1)).cpu().tolist(),
+    )
+
+
+def save_checkpoint(
+    path,
+    model: nn.Module,
+    ema: ModelEMA,
+    extras: dict | None = None,
+) -> None:
+    payload: dict = {"model": model.state_dict(), "ema": ema.state_dict()}
+    if extras:
+        payload.update(extras)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, path)
+
+
+def cosine_with_warmup(step: int, total_steps: int, warmup: int) -> float:
+    if step < warmup:
+        return step / max(1, warmup)
+    t = (step - warmup) / max(1, total_steps - warmup)
+    return 0.5 * (1.0 + math.cos(math.pi * t))
+
+
+def set_lrs(
+    optimizer: torch.optim.Optimizer,
+    base_lrs: list[float],
+    scale: float,
+) -> None:
+    for group, base in zip(optimizer.param_groups, base_lrs):
+        group["lr"] = base * scale
 
 
 def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
