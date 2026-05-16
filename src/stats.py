@@ -200,12 +200,6 @@ def main() -> None:
                     "By default runs every dataset in config.DATASETS.",
     )
     p.add_argument(
-        "--dataset",
-        type=str,
-        default=None,
-        help="restrict to a single dataset by name (matches DatasetSpec.name)",
-    )
-    p.add_argument(
         "--num-workers",
         type=int,
         default=8,
@@ -221,15 +215,7 @@ def main() -> None:
     if args.invalidate_cache:
         clear_cache()
 
-    if args.dataset is None:
-        specs = list(config.DATASETS)
-    else:
-        specs = [s for s in config.DATASETS if s.name == args.dataset]
-        if not specs:
-            available = ", ".join(s.name for s in config.DATASETS)
-            raise SystemExit(f"no dataset named {args.dataset!r} (available: {available})")
-
-    for spec in specs:
+    for spec in config.DATASETS:
         stats = get_stats(spec, num_workers=args.num_workers)
         logger.info(
             "%s: mean=%s std=%s",
