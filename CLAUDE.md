@@ -120,11 +120,12 @@ ML-domain code lives at `src/` root; general-purpose helpers live under
 `src/utils/` (a real package, with `__init__.py`).
 
 ```
-config.py         DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
-                  IMAGENET_MEAN/STD, DATASETS (instances), sizes,
+config.py         DEVICE, IMAGENET_MEAN/STD, DATASETS (instances), sizes,
                   STATS_SAMPLE_FRACTION/SEED
-constants.py      ROTATIONS, NUM_CLASSES — domain constants depended on by
-                  datasets/model/train/infer without going through config
+constants.py      ROTATIONS, NUM_CLASSES, PROJECT_ROOT, CHECKPOINT_DIR,
+                  INDEX_CACHE_DIR — domain constants and static paths
+                  depended on by datasets/model/train/infer/utils without
+                  going through config
 datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None)
                   + ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
 stats.py          get_stats(spec) — per-dataset channel mean/std, sampled and
