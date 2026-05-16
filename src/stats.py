@@ -87,8 +87,8 @@ def get_stats(
     stats = compute_stats(sample, num_workers=num_workers)
     dt = time.monotonic() - t0
     logger.info(
-        "%s stats: mean=%s std=%s (%.1fs)",
-        spec.name, stats.mean, stats.std, dt,
+        "%s stats: mean=%s std=%s (%.1fs, %.1f img/s)",
+        spec.name, stats.mean, stats.std, dt, len(sample) / dt,
     )
 
     with cache.open("w") as f:
