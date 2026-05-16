@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
-from torchvision.transforms import functional as TF
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms as T
 from tqdm import tqdm
 
 import config
@@ -50,7 +51,10 @@ def clear_cache() -> None:
         logger.info("removed cached stats %s", f.name)
 
 
-def get_stats(spec: DatasetSpec) -> ChannelStats:
+def get_stats(
+    spec: DatasetSpec,
+    num_workers: int = 8,
+) -> ChannelStats:
     """Return (mean, std) for the spec, computing+caching on first miss.
 
     If the spec already carries explicit mean/std we return those directly —
@@ -73,12 +77,13 @@ def get_stats(spec: DatasetSpec) -> ChannelStats:
     target_n = max(1, int(len(files) * config.STATS_SAMPLE_FRACTION))
     sample = sample_files(files, target_n, config.STATS_SAMPLE_SEED)
     logger.info(
-        "computing %s stats over %d sampled images (%.1f%% of %d)...",
-        spec.name, len(sample), 100 * config.STATS_SAMPLE_FRACTION, len(files),
+        "computing %s stats over %d sampled images (%.1f%% of %d) on %s...",
+        spec.name, len(sample), 100 * config.STATS_SAMPLE_FRACTION,
+        len(files), config.DEVICE,
     )
 
     t0 = time.monotonic()
-    stats = compute_stats(sample)
+    stats = compute_stats(sample, num_workers=num_workers)
     dt = time.monotonic() - t0
     logger.info(
         "%s stats: mean=%s std=%s (%.1fs)",
@@ -104,29 +109,75 @@ def sample_files(
     return rng.sample(files, n)
 
 
-def compute_stats(files: Sequence[Path]) -> ChannelStats:
-    """Per-channel mean/std on a sample, vectorised per image in float64.
+class StatsDataset(Dataset):
+    """Decode → resize → centre-crop → tensorise for the stats DataLoader.
 
-    Each image is resized to INPUT_SIZE so the cost is bounded and consistent
-    with what training will see. Decode failures are skipped with a warning
-    instead of aborting the run.
+    A fixed (INPUT_SIZE, INPUT_SIZE) crop is used so every sample has the
+    same shape and the loader can stack them into a real batch — variable
+    sizes would force batch_size=1 and kill the parallelism. Decode
+    failures return ``None`` and are filtered by ``stats_collate``.
     """
-    total_pixels = 0
+
+    def __init__(self, files: Sequence[Path]) -> None:
+        self.files = files
+        self.transform = T.Compose([
+            T.Resize(config.RESIZE_SIZE),
+            T.CenterCrop(config.INPUT_SIZE),
+            T.ToTensor(),
+        ])
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __getitem__(self, idx: int) -> torch.Tensor | None:
+        try:
+            img = open_rgb(self.files[idx])
+        except Exception as exc:
+            logger.warning("stats: skipping %s (%s)", self.files[idx], exc)
+            return None
+        return self.transform(img)
+
+
+def stats_collate(batch: list[torch.Tensor | None]) -> torch.Tensor | None:
+    items = [x for x in batch if x is not None]
+    if not items:
+        return None
+    return torch.stack(items)
+
+
+def compute_stats(
+    files: Sequence[Path],
+    num_workers: int = 8,
+    batch_size: int = 64,
+) -> ChannelStats:
+    """Per-channel mean/std on a sample, decoded in workers and reduced on GPU.
+
+    Per batch we compute sum and sum-of-squares on ``config.DEVICE`` in
+    float32 (consumer GPUs are slow at float64), then accumulate those small
+    tensors on the CPU in float64. Per-batch precision stays tight because
+    each partial is bounded by the batch's pixel count.
+    """
+    loader = DataLoader(
+        StatsDataset(files),
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=stats_collate,
+        pin_memory=config.DEVICE.type == "cuda",
+        persistent_workers=num_workers > 0,
+    )
+
     sum_c = torch.zeros(3, dtype=torch.float64)
     sum_sq_c = torch.zeros(3, dtype=torch.float64)
+    total_pixels = 0
 
-    for path in tqdm(files, desc="stats", unit="img"):
-        try:
-            img = open_rgb(path)
-        except Exception as exc:
-            logger.warning("stats: skipping %s (%s)", path, exc)
+    for batch in tqdm(loader, desc="stats", unit="batch"):
+        if batch is None:
             continue
-        img = TF.resize(img, config.INPUT_SIZE)
-        tensor = TF.to_tensor(img).to(torch.float64)  # [3, H, W] in [0, 1]
-        flat = tensor.reshape(3, -1)
-        sum_c += flat.sum(dim=1)
-        sum_sq_c += (flat * flat).sum(dim=1)
-        total_pixels += flat.shape[1]
+        batch = batch.to(config.DEVICE, non_blocking=True)
+        b, _, h, w = batch.shape
+        sum_c += batch.sum(dim=(0, 2, 3)).double().cpu()
+        sum_sq_c += (batch * batch).sum(dim=(0, 2, 3)).double().cpu()
+        total_pixels += b * h * w
 
     if total_pixels == 0:
         raise RuntimeError("no images decoded; cannot compute stats")
@@ -152,6 +203,12 @@ def main() -> None:
         help="restrict to a single dataset by name (matches DatasetSpec.name)",
     )
     p.add_argument(
+        "--num-workers",
+        type=int,
+        default=8,
+        help="DataLoader worker processes used for image decoding",
+    )
+    p.add_argument(
         "--invalidate-cache",
         action="store_true",
         help="delete cached stats JSONs before recomputing",
@@ -170,7 +227,7 @@ def main() -> None:
             raise SystemExit(f"no dataset named {args.dataset!r} (available: {available})")
 
     for spec in specs:
-        stats = get_stats(spec)
+        stats = get_stats(spec, num_workers=args.num_workers)
         logger.info(
             "%s: mean=%s std=%s",
             spec.name, stats.mean, stats.std,
