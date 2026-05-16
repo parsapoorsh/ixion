@@ -121,10 +121,12 @@ ML-domain code lives at `src/` root; general-purpose helpers live under
 
 ```
 config.py         DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
-                  IMAGENET_MEAN/STD, DATASETS (instances), sizes, ROTATIONS,
+                  IMAGENET_MEAN/STD, DATASETS (instances), sizes,
                   STATS_SAMPLE_FRACTION/SEED
-spec.py           DatasetSpec dataclass (name, train, val, mean, std)
-datasets.py       ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
+constants.py      ROTATIONS, NUM_CLASSES — domain constants depended on by
+                  datasets/model/train/infer without going through config
+datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None)
+                  + ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
 stats.py          get_stats(spec) — per-dataset channel mean/std, sampled and
                   cached, or returned from the spec when set explicitly
 builders.py       build_train_transform, build_eval_transform,
@@ -146,13 +148,13 @@ utils/
   logsetup.py     setup_logging() — shared logger config
 ```
 
-**Dependency direction**: `utils.* → spec → config → datasets → builders →
-{train, calibrate, infer, smoke_test}`. No cycles.
+**Dependency direction**: `utils.* + constants → datasets → config →
+builders → {train, calibrate, infer, smoke_test}`. No cycles.
 
 **Import style**: `src/` is on `sys.path` when a CLI is run from project
 root (`venv/bin/python src/<file>.py`), so absolute imports work — e.g.
-`from utils.image_io import open_rgb`, `import config`, `from spec import
-DatasetSpec`. No leading-dot relative imports.
+`from utils.image_io import open_rgb`, `import config`, `from datasets
+import DatasetSpec`. No leading-dot relative imports.
 
 ## Entry points
 
@@ -194,8 +196,13 @@ Strict rules — apply without asking:
   `train.py` calls `save_checkpoint`, it lives in `train.py`. Earlier I
   extracted `checkpoint.py`, `evaluate.py`, `schedule.py` and was told to
   put them back. They're now inlined.
-- `DatasetSpec` is its own file (`spec.py`) because it's a shared shape
-  with no logic, used across modules.
+- `DatasetSpec` lives in `datasets.py` alongside the dataset classes that
+  consume it — it used to be in `spec.py` but the standalone file was
+  one line of dataclass with no other purpose.
+- `ROTATIONS` and `NUM_CLASSES` live in `constants.py`, not `config.py`,
+  so data and model code can import them without dragging in the rest of
+  config (and so config can import data-side types without creating a
+  cycle).
 
 ### Anti-patterns the user called out
 
