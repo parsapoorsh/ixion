@@ -7,14 +7,15 @@ explicit mean/std (e.g. pinned to ImageNet) bypasses all of this and is
 returned as-is.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
 import random
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 from torchvision.transforms import functional as TF
@@ -24,7 +25,12 @@ import config
 from image_io import open_rgb
 from index import index_files
 from logsetup import setup_logging
-from spec import DatasetSpec
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
+    from spec import DatasetSpec
 
 logger = logging.getLogger(__name__)
 
