@@ -11,6 +11,7 @@ wiring live in builders.py.
 """
 
 from pathlib import Path
+from typing import Sequence
 
 import torch
 from PIL import Image
@@ -22,9 +23,15 @@ from image_io import open_rgb
 
 
 class ImageLoader(Dataset):
-    """Returns PIL.Image (RGB) by index from a flat list of image files."""
+    """Returns PIL.Image (RGB) by index from a path source.
 
-    def __init__(self, files: list[Path]) -> None:
+    ``files`` only needs to support ``__len__`` and ``__getitem__(idx)`` —
+    anything sequence-like works (a list, an ``index.PathList`` view over a
+    trie, etc.). We don't require a materialised list so the caller can
+    keep the index in a compact representation.
+    """
+
+    def __init__(self, files: Sequence[Path]) -> None:
         self.files = files
 
     def __len__(self) -> int:
