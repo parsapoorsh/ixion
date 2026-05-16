@@ -12,7 +12,6 @@ single forward pass on a (4, C, H, W) tensor.
 
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
 
 import pillow_jxl  # noqa: F401  ensure JXL handler is registered
 import torch
@@ -22,7 +21,6 @@ from torchvision.transforms import functional as TF
 
 import config
 from builders import build_eval_transform
-from model import build_model
 
 
 @dataclass
@@ -86,21 +84,9 @@ def predict_image(
     )
 
 
-def load_model_for_inference(
-    checkpoint: Path,
-    device: torch.device,
-) -> nn.Module:
-    model = build_model(pretrained=False).to(device)
-    state = torch.load(checkpoint, map_location=device)
-    state_dict = state.get("ema") or state.get("model") or state
-    model.load_state_dict(state_dict)
-    model.train(False)
-    return model
-
-
 def predict_path(
     model: nn.Module,
-    path: Path,
+    path,
     device: torch.device,
     mean: tuple[float, float, float],
     std: tuple[float, float, float],

@@ -12,9 +12,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-import config
 from builders import build_val_dataset
-from infer import load_model_for_inference
+from model import build_model
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +75,8 @@ def expected_calibration_error(
 
 
 def main() -> None:
+    import config
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -92,7 +93,12 @@ def main() -> None:
     args = p.parse_args()
 
     device = torch.device("cuda")
-    model = load_model_for_inference(args.checkpoint, device)
+    model = build_model(pretrained=False).to(device)
+    state = torch.load(args.checkpoint, map_location=device)
+    state_dict = state.get("ema") or state.get("model") or state
+    model.load_state_dict(state_dict)
+    model.train(False)
+
     val_ds = build_val_dataset(config.DATASETS)
     loader = DataLoader(
         val_ds,
