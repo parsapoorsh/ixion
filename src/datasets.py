@@ -18,7 +18,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import functional as TF
 
-import config
+import constants
 from utils.image_io import open_rgb
 
 
@@ -53,11 +53,11 @@ class RotationPairDataset(Dataset):
         self.transform = transform
 
     def __len__(self) -> int:
-        return len(self.base) * config.NUM_CLASSES
+        return len(self.base) * constants.NUM_CLASSES
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        img_idx, rot_idx = divmod(idx, config.NUM_CLASSES)
+        img_idx, rot_idx = divmod(idx, constants.NUM_CLASSES)
         img = self.base[img_idx]
         if rot_idx != 0:
-            img = TF.rotate(img, config.ROTATIONS[rot_idx], expand=False)
+            img = TF.rotate(img, constants.ROTATIONS[rot_idx], expand=False)
         return self.transform(img), rot_idx

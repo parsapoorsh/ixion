@@ -18,7 +18,7 @@ from PIL import Image
 from torch import nn
 from torchvision.transforms import functional as TF
 
-import config
+import constants
 from builders import build_eval_transform
 
 
@@ -45,7 +45,7 @@ def predict_image(
 ) -> Prediction:
     transform = build_eval_transform(mean=mean, std=std)
     views = torch.stack(
-        [transform(TF.rotate(img, r, expand=False)) for r in config.ROTATIONS]
+        [transform(TF.rotate(img, r, expand=False)) for r in constants.ROTATIONS]
     )
     views = views.to(device, non_blocking=True)
 
@@ -60,23 +60,23 @@ def predict_image(
     # If we rotated the image by r and the model says it's at p, then the
     # source was at (p - r) mod 4 quarters.
     implied = [
-        (int(preds[i].item()) - i) % config.NUM_CLASSES
-        for i in range(config.NUM_CLASSES)
+        (int(preds[i].item()) - i) % constants.NUM_CLASSES
+        for i in range(constants.NUM_CLASSES)
     ]
-    votes_deg = tuple(config.ROTATIONS[v] for v in implied)
+    votes_deg = tuple(constants.ROTATIONS[v] for v in implied)
 
     counts = Counter(implied)
     top, top_count = counts.most_common(1)[0]
-    if top_count == config.NUM_CLASSES:
+    if top_count == constants.NUM_CLASSES:
         conf = "confident"
-    elif top_count == config.NUM_CLASSES - 1:
+    elif top_count == constants.NUM_CLASSES - 1:
         conf = "weak"
     else:
         conf = "ambiguous"
 
     mean_entropy = float(softmax_entropy(probs).mean().item())
     return Prediction(
-        rotation=config.ROTATIONS[top] if conf != "ambiguous" else None,
+        rotation=constants.ROTATIONS[top] if conf != "ambiguous" else None,
         confidence=conf,
         votes=votes_deg,
         entropy=mean_entropy,

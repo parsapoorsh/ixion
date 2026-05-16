@@ -20,6 +20,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 import config
+import constants
 import stats
 from builders import build_train_dataset, build_val_dataset
 from ema import ModelEMA
@@ -62,8 +63,8 @@ def run_validation(
     loader: DataLoader,
 ) -> ValidationResult:
     model.train(False)
-    correct = torch.zeros(config.NUM_CLASSES, device=config.DEVICE)
-    seen = torch.zeros(config.NUM_CLASSES, device=config.DEVICE)
+    correct = torch.zeros(constants.NUM_CLASSES, device=config.DEVICE)
+    seen = torch.zeros(constants.NUM_CLASSES, device=config.DEVICE)
     total_loss = 0.0
     total_n = 0
     loss_fn = nn.CrossEntropyLoss()
@@ -74,7 +75,7 @@ def run_validation(
             logits = model(imgs)
             loss = loss_fn(logits, labels)
         preds = logits.argmax(dim=1)
-        for c in range(config.NUM_CLASSES):
+        for c in range(constants.NUM_CLASSES):
             mask = labels == c
             seen[c] += mask.sum()
             correct[c] += (preds[mask] == c).sum()

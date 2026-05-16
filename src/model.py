@@ -9,7 +9,7 @@ import timm
 import torch
 from torch import nn
 
-import config
+import constants
 
 
 class RotationModel(nn.Module):
@@ -25,7 +25,7 @@ class RotationModel(nn.Module):
         self.head = nn.Sequential(
             nn.LayerNorm(feat_dim),
             nn.Dropout(drop_rate),
-            nn.Linear(feat_dim, config.NUM_CLASSES),
+            nn.Linear(feat_dim, constants.NUM_CLASSES),
         )
         # Temperature for post-hoc calibration. Not learned during training.
         self.register_buffer("temperature", torch.ones(1))
