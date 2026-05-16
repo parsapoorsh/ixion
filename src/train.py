@@ -179,7 +179,6 @@ def train_one_run(cfg: TrainConfig) -> None:
     )
 
     global_step = 0
-    best_acc = 0.0
     for epoch in range(cfg.epochs):
         model.train()
         epoch_start = time.monotonic()
@@ -242,15 +241,15 @@ def train_one_run(cfg: TrainConfig) -> None:
                 "validation epoch %d loss=%.4f acc=%.4f per_class=%s",
                 epoch, result.loss, result.acc, result.per_class,
             )
-            if result.acc > best_acc:
-                best_acc = result.acc
-                ckpt = constants.CHECKPOINT_DIR / "best.pt"
-                save_checkpoint(ckpt, model, ema, extras={"epoch": epoch, "acc": best_acc})
-                logger.info("saved %s (acc=%.4f)", ckpt, best_acc)
+            extras = {"epoch": epoch, "acc": result.acc}
+        else:
+            extras = {"epoch": epoch}
 
-    last_path = constants.CHECKPOINT_DIR / "last.pt"
-    save_checkpoint(last_path, model, ema)
-    logger.info("done. best val acc = %.4f, last ckpt = %s", best_acc, last_path)
+        ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
+        save_checkpoint(ckpt, model, ema, extras=extras)
+        logger.info("saved %s", ckpt)
+
+    logger.info("done.")
 
 
 def main() -> None:
