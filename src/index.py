@@ -13,7 +13,7 @@ from typing import Sequence
 
 import config
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def index_files(name: str, roots: Sequence[Path]) -> list[Path]:
@@ -37,7 +37,7 @@ def index_files(name: str, roots: Sequence[Path]) -> list[Path]:
             if entry.is_file():
                 files.append(entry)
     dt = time.monotonic() - t0
-    log.info("scanned %s: %d files in %.1fs", name, len(files), dt)
+    logger.info("scanned %s: %d files in %.1fs", name, len(files), dt)
 
     with cache.open("w") as f:
         json.dump([str(p) for p in files], f)

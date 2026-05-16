@@ -22,7 +22,7 @@ from ema import ModelEMA
 from logsetup import setup_logging
 from model import RotationModel
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -110,10 +110,10 @@ def set_lrs(
 
 
 def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
-    log.info("building datasets...")
+    logger.info("building datasets...")
     train_ds = build_train_dataset(config.DATASETS)
     val_ds = build_val_dataset(config.DATASETS)
-    log.info("train pairs: %d, val pairs: %d", len(train_ds), len(val_ds))
+    logger.info("train pairs: %d, val pairs: %d", len(train_ds), len(val_ds))
 
     train_loader = DataLoader(
         train_ds,
@@ -153,7 +153,7 @@ def train_one_run(cfg: TrainConfig) -> None:
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * cfg.epochs
-    log.info("%d epochs x %d steps = %d total", cfg.epochs, steps_per_epoch, total_steps)
+    logger.info("%d epochs x %d steps = %d total", cfg.epochs, steps_per_epoch, total_steps)
 
     global_step = 0
     best_acc = 0.0
@@ -189,21 +189,21 @@ def train_one_run(cfg: TrainConfig) -> None:
                 lr_now = optimizer.param_groups[0]["lr"]
                 acc = running_correct / max(1, running_seen)
                 avg_loss = running_loss / max(1, running_seen)
-                log.info(
+                logger.info(
                     "ep %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
                     epoch, global_step, total_steps, avg_loss, acc, lr_now,
                 )
             global_step += 1
 
         dt = time.monotonic() - epoch_start
-        log.info(
+        logger.info(
             "epoch %d done in %.0fs, throughput %.1f img/s",
             epoch, dt, running_seen / dt,
         )
 
         if (epoch + 1) % cfg.val_every_epoch == 0:
             result = run_validation(ema.module, val_loader)
-            log.info(
+            logger.info(
                 "val ep %d loss=%.4f acc=%.4f per_class=%s",
                 epoch, result.loss, result.acc, result.per_class,
             )
@@ -211,11 +211,11 @@ def train_one_run(cfg: TrainConfig) -> None:
                 best_acc = result.acc
                 ckpt = config.CHECKPOINT_DIR / "best.pt"
                 save_checkpoint(ckpt, model, ema, extras={"epoch": epoch, "acc": best_acc})
-                log.info("saved %s (acc=%.4f)", ckpt, best_acc)
+                logger.info("saved %s (acc=%.4f)", ckpt, best_acc)
 
     last_path = config.CHECKPOINT_DIR / "last.pt"
     save_checkpoint(last_path, model, ema)
-    log.info("done. best val acc = %.4f, last ckpt = %s", best_acc, last_path)
+    logger.info("done. best val acc = %.4f, last ckpt = %s", best_acc, last_path)
 
 
 def main() -> None:

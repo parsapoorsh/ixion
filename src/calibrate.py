@@ -13,7 +13,7 @@ from calibration import expected_calibration_error, fit_temperature, gather_logi
 from logsetup import setup_logging
 from model import RotationModel
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -43,13 +43,13 @@ def main() -> None:
         pin_memory=True,
     )
 
-    log.info("gathering logits...")
+    logger.info("gathering logits...")
     logits, labels = gather_logits(model, loader, config.DEVICE)
 
     ece_before = expected_calibration_error(logits.softmax(dim=-1), labels)
     T = fit_temperature(logits, labels)
     ece_after = expected_calibration_error((logits / T).softmax(dim=-1), labels)
-    log.info(
+    logger.info(
         "T = %.4f  ECE before = %.4f  ECE after = %.4f",
         T, ece_before, ece_after,
     )
@@ -57,7 +57,7 @@ def main() -> None:
     model.temperature.fill_(T)
     out = args.checkpoint.with_name(args.checkpoint.stem + "_calibrated.pt")
     torch.save({"model": model.state_dict(), "temperature": T}, out)
-    log.info("saved %s", out)
+    logger.info("saved %s", out)
 
 
 if __name__ == "__main__":

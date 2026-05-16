@@ -18,16 +18,16 @@ from infer import predict_image
 from logsetup import setup_logging
 from model import RotationModel
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
     setup_logging()
-    log.info("device = %s", config.DEVICE)
+    logger.info("device = %s", config.DEVICE)
 
     model = RotationModel(pretrained=True).to(config.DEVICE)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    log.info("model params = %.2f M", n_params)
+    logger.info("model params = %.2f M", n_params)
 
     eg_dir = config.PROJECT_ROOT / "examples"
     sample_files = sorted(eg_dir.glob("*"))
@@ -44,18 +44,18 @@ def main() -> None:
         logits = model(batch)
         loss = torch.nn.functional.cross_entropy(logits, labels)
     loss.backward()
-    log.info(
+    logger.info(
         "train forward/backward ok. loss=%.3f, logits shape=%s",
         loss.item(), tuple(logits.shape),
     )
 
     model.train(False)
-    log.info("inference on examples/:")
+    logger.info("inference on examples/:")
     for p in sample_files:
         try:
             img = Image.open(p).convert("RGB")
         except Exception as exc:
-            log.warning("%s: failed to open (%s)", p.name, exc)
+            logger.warning("%s: failed to open (%s)", p.name, exc)
             continue
         pred = predict_image(
             model=model,
@@ -64,7 +64,7 @@ def main() -> None:
             mean=spec.mean,
             std=spec.std,
         )
-        log.info(
+        logger.info(
             "%-25s rot=%s conf=%-9s votes=%s entropy=%.3f",
             p.name, pred.rotation, pred.confidence, pred.votes, pred.entropy,
         )
