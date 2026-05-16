@@ -122,14 +122,13 @@ ML-domain code lives at `src/` root; general-purpose helpers live under
 ```
 config.py         DEVICE, PROJECT_ROOT, CHECKPOINT_DIR, INDEX_CACHE_DIR,
                   IMAGENET_MEAN/STD, DATASETS (instances), sizes, ROTATIONS,
-                  STATS_SAMPLE_FRACTION/SEED, build_train_transform,
-                  build_eval_transform
+                  STATS_SAMPLE_FRACTION/SEED
 spec.py           DatasetSpec dataclass (name, train, val, mean, std)
 datasets.py       ImageLoader (PIL by index) + RotationPairDataset (4× wrapper)
 stats.py          get_stats(spec) — per-dataset channel mean/std, sampled and
                   cached, or returned from the spec when set explicitly
-builders.py       build_train_dataset, build_val_dataset (dataset wiring only;
-                  transform builders live in config.py)
+builders.py       build_train_transform, build_eval_transform,
+                  build_train_dataset, build_val_dataset
 model.py          RotationModel (ConvNeXt-V2-Tiny + head + temperature)
 ema.py            ModelEMA — deepcopy + per-step weight averaging
 calibration.py    gather_logits, fit_temperature (LBFGS), expected_calibration_error
