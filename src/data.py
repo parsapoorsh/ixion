@@ -1,4 +1,4 @@
-"""Dataset and transforms for rotation detection.
+"""JXL loading, transforms, and the rotation pair wrapper.
 
 Source images are JPEG-XL (.jxl); pillow-jxl-plugin auto-registers a PIL handler
 on import so PIL.Image.open transparently decodes them.
@@ -6,7 +6,8 @@ on import so PIL.Image.open transparently decodes them.
 The training dataset is built from ImageNet + COCO. Each base image yields four
 training samples — one per rotation in {0, 90, 180, 270}. The sample index is
 (image_idx, rotation_idx), so each epoch sees a perfectly class-balanced view
-of the data with full coverage of every rotation.
+of the data with full coverage of every rotation. One RotationPairDataset is
+constructed per source so each image is normalized with its source's stats.
 """
 
 import json
@@ -18,7 +19,7 @@ from typing import Sequence
 import pillow_jxl  # noqa: F401  side effect: registers JXL handler with PIL
 import torch
 from PIL import Image, ImageFile
-from torch.utils.data import Dataset
+from torch.utils.data import ConcatDataset, Dataset
 from torchvision import transforms as T
 from torchvision.transforms import functional as TF
 
@@ -27,8 +28,6 @@ from datasets import DatasetSpec
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 log = logging.getLogger(__name__)
-
-NormStats = tuple[tuple[float, float, float], tuple[float, float, float]]
 
 
 def scan_jxl(roots: Sequence[Path]) -> list[Path]:
@@ -128,19 +127,24 @@ def build_eval_transform(
     ])
 
 
-def build_train_dataset(
-    datasets: Sequence[DatasetSpec],
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
-) -> RotationPairDataset:
-    files = load_or_build_index("train", [d.train for d in datasets])
-    return RotationPairDataset(JxlImageList(files), build_train_transform(mean, std))
+def build_train_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
+    """One RotationPairDataset per source dataset, normalized with that source's
+    own mean/std, then concatenated. Each image is normalized by the stats it
+    was registered with, which keeps the input distribution to the model
+    consistent in mean=0/std=1 space even when sources differ.
+    """
+    parts: list[RotationPairDataset] = []
+    for spec in datasets:
+        files = load_or_build_index(f"train_{spec.name}", [spec.train])
+        transform = build_train_transform(spec.mean, spec.std)
+        parts.append(RotationPairDataset(JxlImageList(files), transform))
+    return ConcatDataset(parts)
 
 
-def build_val_dataset(
-    datasets: Sequence[DatasetSpec],
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
-) -> RotationPairDataset:
-    files = load_or_build_index("val", [d.val for d in datasets])
-    return RotationPairDataset(JxlImageList(files), build_eval_transform(mean, std))
+def build_val_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
+    parts: list[RotationPairDataset] = []
+    for spec in datasets:
+        files = load_or_build_index(f"val_{spec.name}", [spec.val])
+        transform = build_eval_transform(spec.mean, spec.std)
+        parts.append(RotationPairDataset(JxlImageList(files), transform))
+    return ConcatDataset(parts)

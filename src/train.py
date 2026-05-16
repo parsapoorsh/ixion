@@ -91,16 +91,8 @@ def train_one_run(cfg: TrainConfig) -> None:
     config.CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
     log.info("building datasets...")
-    train_ds = build_train_dataset(
-        datasets=config.DATASETS,
-        mean=config.IMAGENET_MEAN,
-        std=config.IMAGENET_STD,
-    )
-    val_ds = build_val_dataset(
-        datasets=config.DATASETS,
-        mean=config.IMAGENET_MEAN,
-        std=config.IMAGENET_STD,
-    )
+    train_ds = build_train_dataset(config.DATASETS)
+    val_ds = build_val_dataset(config.DATASETS)
     log.info("train pairs: %d, val pairs: %d", len(train_ds), len(val_ds))
 
     train_loader = DataLoader(

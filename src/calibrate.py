@@ -93,11 +93,7 @@ def main() -> None:
 
     device = torch.device("cuda")
     model = load_model_for_inference(args.checkpoint, device)
-    val_ds = build_val_dataset(
-        datasets=config.DATASETS,
-        mean=config.IMAGENET_MEAN,
-        std=config.IMAGENET_STD,
-    )
+    val_ds = build_val_dataset(config.DATASETS)
     loader = DataLoader(
         val_ds,
         batch_size=args.batch_size,
