@@ -13,15 +13,21 @@ reconstructs paths on demand. The model only ever needs ``len`` and
 is not needed and the trie can stay collapsed in memory.
 """
 
+from __future__ import annotations
+
 import bisect
 import json
 import logging
 import lzma
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import config
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
