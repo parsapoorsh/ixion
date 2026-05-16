@@ -11,6 +11,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -82,7 +83,7 @@ def run_validation(
 
 
 def save_checkpoint(
-    path,
+    path: Path,
     model: nn.Module,
     ema: ModelEMA,
     extras: dict | None = None,
