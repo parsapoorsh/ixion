@@ -10,7 +10,7 @@ from torch.utils.data import ConcatDataset
 from torchvision import transforms as T
 
 import config
-from datasets import ImageList, RotationPairDataset
+from datasets import ImageLoader, RotationPairDataset
 from index import index_files
 from spec import DatasetSpec
 
@@ -53,7 +53,7 @@ def build_train_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     for spec in datasets:
         files = index_files(f"train_{spec.name}", [spec.train])
         transform = build_train_transform(spec.mean, spec.std)
-        parts.append(RotationPairDataset(ImageList(files), transform))
+        parts.append(RotationPairDataset(ImageLoader(files), transform))
     return ConcatDataset(parts)
 
 
@@ -62,5 +62,5 @@ def build_val_dataset(datasets: Sequence[DatasetSpec]) -> ConcatDataset:
     for spec in datasets:
         files = index_files(f"val_{spec.name}", [spec.val])
         transform = build_eval_transform(spec.mean, spec.std)
-        parts.append(RotationPairDataset(ImageList(files), transform))
+        parts.append(RotationPairDataset(ImageLoader(files), transform))
     return ConcatDataset(parts)

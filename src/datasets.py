@@ -24,7 +24,7 @@ import config
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
-class ImageList(Dataset):
+class ImageLoader(Dataset):
     """Returns PIL.Image (RGB) by index from a flat list of image files."""
 
     def __init__(self, files: list[Path]) -> None:
@@ -44,7 +44,7 @@ class RotationPairDataset(Dataset):
     img_idx = i // 4 and rot_idx = i % 4. Rotation label is rot_idx.
     """
 
-    def __init__(self, base: ImageList, transform) -> None:
+    def __init__(self, base: ImageLoader, transform) -> None:
         self.base = base
         self.transform = transform
 
