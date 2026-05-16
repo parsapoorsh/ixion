@@ -142,11 +142,7 @@ class StatsDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> torch.Tensor | None:
-        try:
-            img = open_rgb(self.files[idx])
-        except Exception as exc:
-            logger.warning("stats: skipping %s (%s)", self.files[idx], exc)
-            return None
+        img = open_rgb(self.files[idx])
         return self.transform(img)
 
 
