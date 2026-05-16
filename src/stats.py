@@ -24,7 +24,7 @@ from tqdm import tqdm
 import config
 from utils.image_io import open_rgb
 from index import index_files
-from logsetup import setup_logging
+from utils.logsetup import setup_logging
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

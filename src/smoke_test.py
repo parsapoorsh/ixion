@@ -15,7 +15,7 @@ import config
 from config import build_train_transform
 from utils.image_io import open_rgb
 from infer import predict_image
-from logsetup import setup_logging
+from utils.logsetup import setup_logging
 from model import RotationModel
 from stats import get_stats
 

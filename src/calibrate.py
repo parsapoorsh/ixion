@@ -12,7 +12,7 @@ import stats
 from builders import build_val_dataset
 from calibration import expected_calibration_error, fit_temperature, gather_logits
 from index import clear_cache
-from logsetup import setup_logging
+from utils.logsetup import setup_logging
 from model import RotationModel
 
 logger = logging.getLogger(__name__)
