@@ -34,11 +34,20 @@ DATASETS = [
     ),
 ]
 
-INPUT_SIZE = 224
-RESIZE_SIZE = 232
-
 # stats.get_stats samples this fraction of each dataset's train split.
 # Changing this requires --invalidate-cache to take effect; cached stats
 # don't track which fraction produced them.
 STATS_SAMPLE_FRACTION = 0.05
 STATS_SAMPLE_SEED = 0
+
+
+# Image size fed to the model. ConvNeXt-V2-Tiny ends in AdaptiveAvgPool so
+# the architecture itself accepts any size; 224 is the convention from the
+# pretrained checkpoint. Training from scratch leaves this as a free knob —
+# bumping to 256/288 trades compute for more orientation cues.
+INPUT_SIZE = 224
+
+# Pre-crop resize. Kept slightly larger than INPUT_SIZE so RandomCrop has
+# pixels to choose from; standard ConvNeXt eval recipes pair 232 with 224.
+# If you change INPUT_SIZE, scale this by ~1.03–1.14×.
+RESIZE_SIZE = 232
