@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
+from PIL import UnidentifiedImageError
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import functional as TF
@@ -103,11 +104,23 @@ class AmbiguityScanDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        img = open_rgb(self.files[idx])
+        n = len(self.files)
+        for offset in range(n):
+            probe = (idx + offset) % n
+            try:
+                img = open_rgb(self.files[probe])
+                break
+            except (UnidentifiedImageError, OSError) as exc:
+                logger.warning(
+                    "skipping unreadable image %s: %s",
+                    self.files[probe], exc,
+                )
+        else:
+            raise RuntimeError("no readable images remain in the dataset")
         views = torch.stack(
             [self.transform(TF.rotate(img, r, expand=False)) for r in constants.ROTATIONS]
         )
-        return views, idx
+        return views, probe
 
 
 @torch.no_grad()
