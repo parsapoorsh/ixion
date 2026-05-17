@@ -11,12 +11,13 @@ every rotation. Filesystem scanning lives in utils.index; transform recipes
 live in builders.py.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 import torch
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from torch.utils.data import ConcatDataset, Dataset
 from torchvision.transforms import functional as TF
 
@@ -25,6 +26,8 @@ import stats
 from builders import build_eval_transform, build_train_transform
 from utils.image_io import open_rgb
 from utils.index import index_files
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,7 +80,19 @@ class RotationPairDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         img_idx, rot_idx = divmod(idx, constants.NUM_CLASSES)
-        img = self.base[img_idx]
+        n = len(self.base)
+        for offset in range(n):
+            probe = (img_idx + offset) % n
+            try:
+                img = self.base[probe]
+                break
+            except (UnidentifiedImageError, OSError) as exc:
+                logger.warning(
+                    "skipping unreadable image %s: %s",
+                    self.base.files[probe], exc,
+                )
+        else:
+            raise RuntimeError("no readable images remain in the dataset")
         if rot_idx != 0:
             img = TF.rotate(img, constants.ROTATIONS[rot_idx], expand=False)
         return self.transform(img), rot_idx
