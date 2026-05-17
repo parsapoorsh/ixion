@@ -1,0 +1,39 @@
+"""ConvNeXt-V2-Tiny backbone.
+
+Trained from scratch. The timm id keeps the ``.fcmae_ft_in22k_in1k``
+variant because that's the architecture we want; ``pretrained=False``
+just skips loading the weights.
+"""
+
+from typing import ClassVar
+
+import timm
+from torch import nn
+
+from models.base import Backbone, TrainDefaults
+
+
+class ConvNeXtV2Tiny(Backbone):
+    name: ClassVar[str] = "convnextv2_tiny"
+    # batch_size is the hard arch-coupled knob — sized for the BF16
+    # activation footprint on a 16GB card shared with the desktop
+    # compositor; 128 OOMs in practice.
+    train_defaults: ClassVar[TrainDefaults] = TrainDefaults(
+        epochs=100,
+        batch_size=64,
+        lr=1e-3,
+        weight_decay=0.05,
+        label_smoothing=0.1,
+        warmup_epochs=5,
+        grad_clip=1.0,
+        ema_decay=0.9999,
+    )
+
+    def build(self, *, pretrained: bool) -> tuple[nn.Module, int]:
+        model = timm.create_model(
+            "convnextv2_tiny.fcmae_ft_in22k_in1k",
+            pretrained=pretrained,
+            num_classes=0,
+            global_pool="avg",
+        )
+        return model, model.num_features  # 768

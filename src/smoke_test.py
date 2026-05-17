@@ -18,6 +18,7 @@ from utils.image_io import open_rgb
 from infer import predict_image
 from utils.logsetup import setup_logging
 from models import RotationModel
+from models.backbones import EfficientNetB0
 from stats import get_stats
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ def main() -> None:
     logger.info("device = %s", config.DEVICE)
 
     model = RotationModel(
-        backbone="convnextv2_tiny",
+        backbone=EfficientNetB0(),
         pretrained=False,
     ).to(config.DEVICE)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
@@ -41,9 +42,9 @@ def main() -> None:
     spec = config.DATASETS[0]
     stats = get_stats(spec)
     train_tf = build_train_transform(mean=stats.mean, std=stats.std)
-    imgs = [train_tf(open_rgb(p)) for p in sample_files[:4]]
+    imgs = [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_CLASSES]]
     batch = torch.stack(imgs).to(config.DEVICE)
-    labels = torch.tensor([0, 1, 2, 3], device=config.DEVICE)
+    labels = torch.tensor(range(constants.NUM_CLASSES), device=config.DEVICE)
 
     model.train()
     with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):

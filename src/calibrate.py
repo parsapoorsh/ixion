@@ -120,7 +120,7 @@ def main() -> None:
         stats.clear_cache()
 
     model = RotationModel(
-        backbone="convnextv2_tiny",
+        backbone=config.DEFAULT_BACKBONE,
         pretrained=False,
     ).to(config.DEVICE)
     state = torch.load(args.checkpoint, map_location=config.DEVICE)
