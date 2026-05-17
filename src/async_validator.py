@@ -267,7 +267,7 @@ def validator_worker(
     device_index: int,
     log_path: Path,
 ) -> None:
-    setup_logging(log_path=log_path)
+    setup_logging(log_path=log_path, console=False)
     log = logging.getLogger(__name__)
     log.info("validator worker starting on cuda:%d", device_index)
     torch.cuda.set_device(device_index)

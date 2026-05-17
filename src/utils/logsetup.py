@@ -28,20 +28,23 @@ class TqdmLoggingHandler(logging.Handler):
 def setup_logging(
     level: int = logging.INFO,
     log_path: Path | None = None,
+    console: bool = True,
 ) -> Path:
     """Configure the root logger. Returns the file path being written to so
     a parent process can hand it to a child (mp.Process target) and have
     both write to the same file. FileHandler uses append mode and log lines
     are well under PIPE_BUF (4KB), so concurrent appenders on POSIX are
     safe.
+
+    Pass ``console=False`` from a child process that shares stdout with a
+    parent running a tqdm progress bar — otherwise the child's log writes
+    will land mid-bar and scramble the display. The shared log file still
+    captures everything; tail it in another terminal to watch the child.
     """
     formatter = logging.Formatter(
         fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-    console_handler = TqdmLoggingHandler()
-    console_handler.setFormatter(formatter)
 
     constants.LOGS_DIR.mkdir(parents=True, exist_ok=True)
     if log_path is None:
@@ -53,6 +56,9 @@ def setup_logging(
     root.setLevel(level)
     for existing in list(root.handlers):
         root.removeHandler(existing)
-    root.addHandler(console_handler)
+    if console:
+        console_handler = TqdmLoggingHandler()
+        console_handler.setFormatter(formatter)
+        root.addHandler(console_handler)
     root.addHandler(file_handler)
     return log_path
