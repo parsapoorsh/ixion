@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 import config
 import constants
 import stats
-from model import RotationModel
+from models import RotationModel
 from datasets import build_val_dataset
 from utils.index import clear_cache
 from utils.logsetup import setup_logging
@@ -119,7 +119,10 @@ def main() -> None:
         clear_cache()
         stats.clear_cache()
 
-    model = RotationModel(pretrained=False).to(config.DEVICE)
+    model = RotationModel(
+        backbone="convnextv2_tiny",
+        pretrained=False,
+    ).to(config.DEVICE)
     state = torch.load(args.checkpoint, map_location=config.DEVICE)
     state_dict = state.get("ema") or state.get("model") or state
     model.load_state_dict(state_dict)

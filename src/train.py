@@ -28,7 +28,7 @@ from datasets import build_train_dataset, build_val_dataset
 from ema import ModelEMA
 from utils.index import clear_cache
 from utils.logsetup import setup_logging
-from model import RotationModel
+from models import RotationModel
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -159,7 +159,10 @@ def train_one_run(cfg: TrainConfig) -> None:
     torch.manual_seed(cfg.seed)
     train_loader, val_loader = build_loaders(cfg)
 
-    model = RotationModel(pretrained=False).to(config.DEVICE)
+    model = RotationModel(
+        backbone="convnextv2_tiny",
+        pretrained=False,
+    ).to(config.DEVICE)
     ema = ModelEMA(model, decay=cfg.ema_decay)
 
     optimizer = torch.optim.AdamW(

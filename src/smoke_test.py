@@ -17,7 +17,7 @@ from builders import build_train_transform
 from utils.image_io import open_rgb
 from infer import predict_image
 from utils.logsetup import setup_logging
-from model import RotationModel
+from models import RotationModel
 from stats import get_stats
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,10 @@ def main() -> None:
     setup_logging()
     logger.info("device = %s", config.DEVICE)
 
-    model = RotationModel(pretrained=False).to(config.DEVICE)
+    model = RotationModel(
+        backbone="convnextv2_tiny",
+        pretrained=False,
+    ).to(config.DEVICE)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info("model params = %.2f M", n_params)
 
