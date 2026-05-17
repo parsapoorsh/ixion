@@ -1,6 +1,6 @@
 """Model package.
 
-Generic rotation wrapper (head + temperature) lives in ``rotation.py``.
+Generic rotation wrapper (backbone + 4-class head) lives in ``rotation.py``.
 Backbone implementations live under ``models.backbones`` — one
 ``Backbone`` subclass per architecture.
 

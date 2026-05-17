@@ -68,8 +68,6 @@ def predict_image(
 
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         logits = model(views)
-        if hasattr(model, "temperature"):
-            logits = logits / model.temperature
     probs = logits.float().softmax(dim=-1)
     preds = probs.argmax(dim=-1)  # shape [4], values in {0,1,2,3}
 
