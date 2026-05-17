@@ -27,7 +27,8 @@ from tqdm.auto import tqdm
 import config
 import constants
 import stats
-from datasets import build_train_dataset, build_val_dataset
+from async_validator import AsyncValidator
+from datasets import build_train_dataset
 from models import Backbone, ModelEMA, RotationModel, TrainDefaults
 from utils.index import clear_cache
 from utils.logsetup import setup_logging
@@ -45,53 +46,6 @@ class RunConfig:
     prefetch_factor: int = constants.PREFETCH_FACTOR
     seed: int = 42
     log_every: int = 50
-    val_interval_epochs: int = 1
-
-
-@dataclass
-class ValidationResult:
-    loss: float
-    acc: float
-    per_class: list[float]
-
-
-@torch.no_grad()
-def run_validation(
-    model: nn.Module,
-    loader: DataLoader,
-) -> ValidationResult:
-    model.train(False)
-    correct = torch.zeros(constants.NUM_CLASSES, device=config.DEVICE)
-    seen = torch.zeros(constants.NUM_CLASSES, device=config.DEVICE)
-    total_loss = 0.0
-    total_n = 0
-    loss_fn = nn.CrossEntropyLoss()
-
-    for imgs, labels in tqdm(
-        loader,
-        desc="validation",
-        unit="batch",
-        leave=False,
-        file=sys.stdout,
-    ):
-        imgs = imgs.to(config.DEVICE, non_blocking=True)
-        labels = labels.to(config.DEVICE, non_blocking=True)
-        with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
-            logits = model(imgs)
-            loss = loss_fn(logits, labels)
-        preds = logits.argmax(dim=1)
-        for c in range(constants.NUM_CLASSES):
-            mask = labels == c
-            seen[c] += mask.sum()
-            correct[c] += (preds[mask] == c).sum()
-        total_loss += loss.item() * imgs.size(0)
-        total_n += imgs.size(0)
-
-    return ValidationResult(
-        loss=total_loss / max(1, total_n),
-        acc=(correct.sum() / seen.sum().clamp(min=1)).item(),
-        per_class=(correct / seen.clamp(min=1)).cpu().tolist(),
-    )
 
 
 def save_checkpoint(
@@ -123,24 +77,18 @@ def set_lr(
         group["lr"] = base_lr * scale
 
 
-def build_loaders(
+def build_train_loader(
     recipe: TrainDefaults,
     run: RunConfig,
-) -> tuple[DataLoader, DataLoader]:
-    logger.info("building datasets...")
+) -> DataLoader:
+    logger.info("building train dataset...")
     train_ds = build_train_dataset(
         config.DATASETS,
         input_size=recipe.input_size,
         resize_size=recipe.resize_size,
     )
-    val_ds = build_val_dataset(
-        config.DATASETS,
-        input_size=recipe.input_size,
-        resize_size=recipe.resize_size,
-    )
-    logger.info("train pairs: %d, val pairs: %d", len(train_ds), len(val_ds))
-
-    train_loader = DataLoader(
+    logger.info("train pairs: %d", len(train_ds))
+    return DataLoader(
         train_ds,
         batch_size=recipe.batch_size,
         shuffle=True,
@@ -150,16 +98,6 @@ def build_loaders(
         prefetch_factor=run.prefetch_factor,
         drop_last=True,
     )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=recipe.batch_size,
-        shuffle=False,
-        num_workers=run.num_workers,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=run.prefetch_factor,
-    )
-    return train_loader, val_loader
 
 
 def train_one_run(
@@ -168,7 +106,7 @@ def train_one_run(
     run: RunConfig,
 ) -> None:
     torch.manual_seed(run.seed)
-    train_loader, val_loader = build_loaders(recipe, run)
+    train_loader = build_train_loader(recipe, run)
 
     model = RotationModel(
         backbone=backbone,
@@ -187,83 +125,97 @@ def train_one_run(
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * recipe.epochs
     warmup_steps = steps_per_epoch * recipe.warmup_epochs
+    mid_epoch_step = steps_per_epoch // 2
     logger.info(
         "%d epochs x %d steps = %d total (warmup %d steps)",
         recipe.epochs, steps_per_epoch, total_steps, warmup_steps,
     )
 
-    global_step = 0
-    for epoch in range(recipe.epochs):
-        model.train()
-        epoch_start = time.monotonic()
-        running_loss = 0.0
-        running_correct = 0
-        running_seen = 0
+    validator = AsyncValidator(
+        backbone=backbone,
+        recipe=recipe,
+        dataset_specs=config.DATASETS,
+        device_index=1,
+    )
 
-        pbar = tqdm(
-            train_loader,
-            desc=f"epoch {epoch}",
-            unit="batch",
-            leave=False,
-            file=sys.stdout,
-        )
-        for imgs, labels in pbar:
-            imgs = imgs.to(config.DEVICE, non_blocking=True)
-            labels = labels.to(config.DEVICE, non_blocking=True)
-
-            scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
-            set_lr(optimizer, recipe.lr, scale)
-
-            with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
-                logits = model(imgs)
-                loss = loss_fn(logits, labels)
-
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), recipe.grad_clip)
-            optimizer.step()
-            ema.update(model)
-
-            running_loss += loss.item() * imgs.size(0)
-            running_correct += (logits.argmax(dim=1) == labels).sum().item()
-            running_seen += imgs.size(0)
-
-            lr_now = optimizer.param_groups[0]["lr"]
-            acc = running_correct / max(1, running_seen)
-            avg_loss = running_loss / max(1, running_seen)
-            pbar.set_postfix(
-                loss=f"{avg_loss:.4f}",
-                acc=f"{acc:.3f}",
-                lr=f"{lr_now:.2e}",
-            )
-            if global_step % run.log_every == 0:
-                logger.info(
-                    "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
-                    epoch, global_step, total_steps, avg_loss, acc, lr_now,
-                )
-            global_step += 1
-
-        dt = time.monotonic() - epoch_start
-        logger.info(
-            "epoch %d done in %.0fs, throughput %.1f img/s",
-            epoch, dt, running_seen / dt,
-        )
-
-        if (epoch + 1) % run.val_interval_epochs == 0:
-            result = run_validation(ema.module, val_loader)
+    def log_results() -> None:
+        for r in validator.drain():
             logger.info(
-                "validation epoch %d loss=%.4f acc=%.4f per_class=%s",
-                epoch, result.loss, result.acc, result.per_class,
+                "validation epoch %d phase=%s loss=%.4f acc=%.4f per_class=%s (%.0fs)",
+                r.epoch, r.phase, r.loss, r.acc, r.per_class, r.seconds,
             )
-            extras = {"epoch": epoch, "acc": result.acc}
-        else:
-            extras = {"epoch": epoch}
 
-        ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
-        save_checkpoint(ckpt, model, ema, extras=extras)
-        logger.info("saved %s", ckpt)
+    try:
+        global_step = 0
+        for epoch in range(recipe.epochs):
+            model.train()
+            epoch_start = time.monotonic()
+            running_loss = 0.0
+            running_correct = 0
+            running_seen = 0
 
-    logger.info("done.")
+            pbar = tqdm(
+                train_loader,
+                desc=f"epoch {epoch}",
+                unit="batch",
+                leave=False,
+                file=sys.stdout,
+            )
+            for batch_idx, (imgs, labels) in enumerate(pbar):
+                log_results()
+                imgs = imgs.to(config.DEVICE, non_blocking=True)
+                labels = labels.to(config.DEVICE, non_blocking=True)
+
+                scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
+                set_lr(optimizer, recipe.lr, scale)
+
+                with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
+                    logits = model(imgs)
+                    loss = loss_fn(logits, labels)
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), recipe.grad_clip)
+                optimizer.step()
+                ema.update(model)
+
+                running_loss += loss.item() * imgs.size(0)
+                running_correct += (logits.argmax(dim=1) == labels).sum().item()
+                running_seen += imgs.size(0)
+
+                lr_now = optimizer.param_groups[0]["lr"]
+                acc = running_correct / max(1, running_seen)
+                avg_loss = running_loss / max(1, running_seen)
+                pbar.set_postfix(
+                    loss=f"{avg_loss:.4f}",
+                    acc=f"{acc:.3f}",
+                    lr=f"{lr_now:.2e}",
+                )
+                if global_step % run.log_every == 0:
+                    logger.info(
+                        "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
+                        epoch, global_step, total_steps, avg_loss, acc, lr_now,
+                    )
+                if batch_idx == mid_epoch_step:
+                    validator.submit(ema.module, epoch, "mid")
+                global_step += 1
+
+            dt = time.monotonic() - epoch_start
+            logger.info(
+                "epoch %d done in %.0fs, throughput %.1f img/s",
+                epoch, dt, running_seen / dt,
+            )
+            validator.submit(ema.module, epoch, "end")
+
+            ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
+            save_checkpoint(ckpt, model, ema, extras={"epoch": epoch})
+            logger.info("saved %s", ckpt)
+
+        log_results()
+        logger.info("done.")
+    finally:
+        validator.shutdown()
+        log_results()
 
 
 def main() -> None:
