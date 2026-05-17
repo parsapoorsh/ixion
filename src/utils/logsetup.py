@@ -7,6 +7,7 @@ Kept in its own file so changing the format/level happens once.
 import logging
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from tqdm.auto import tqdm
 
@@ -24,7 +25,16 @@ class TqdmLoggingHandler(logging.Handler):
             self.handleError(record)
 
 
-def setup_logging(level: int = logging.INFO) -> None:
+def setup_logging(
+    level: int = logging.INFO,
+    log_path: Path | None = None,
+) -> Path:
+    """Configure the root logger. Returns the file path being written to so
+    a parent process can hand it to a child (mp.Process target) and have
+    both write to the same file. FileHandler uses append mode and log lines
+    are well under PIPE_BUF (4KB), so concurrent appenders on POSIX are
+    safe.
+    """
     formatter = logging.Formatter(
         fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -34,7 +44,8 @@ def setup_logging(level: int = logging.INFO) -> None:
     console_handler.setFormatter(formatter)
 
     constants.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = constants.LOGS_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}.txt"
+    if log_path is None:
+        log_path = constants.LOGS_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}.txt"
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
 
@@ -44,3 +55,4 @@ def setup_logging(level: int = logging.INFO) -> None:
         root.removeHandler(existing)
     root.addHandler(console_handler)
     root.addHandler(file_handler)
+    return log_path

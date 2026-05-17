@@ -265,8 +265,9 @@ def validator_worker(
     recipe: TrainDefaults,
     dataset_specs: list[DatasetSpec],
     device_index: int,
+    log_path: Path,
 ) -> None:
-    setup_logging()
+    setup_logging(log_path=log_path)
     log = logging.getLogger(__name__)
     log.info("validator worker starting on cuda:%d", device_index)
     torch.cuda.set_device(device_index)
@@ -365,6 +366,7 @@ class AsyncValidator:
         backbone: Backbone,
         recipe: TrainDefaults,
         dataset_specs: list[DatasetSpec],
+        log_path: Path,
         device_index: int = 1,
     ) -> None:
         ctx = mp.get_context("spawn")
@@ -379,6 +381,7 @@ class AsyncValidator:
                 recipe,
                 dataset_specs,
                 device_index,
+                log_path,
             ),
             # Not daemonic: this process spawns its own DataLoader workers,
             # and the multiprocessing rule is that daemonic parents can't
