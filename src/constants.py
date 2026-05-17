@@ -19,9 +19,8 @@ INDEX_CACHE_DIR = PROJECT_ROOT / "cache"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
 # DataLoader worker processes for image decoding. Tune to the machine —
-# more workers help when decode is the bottleneck, but too many concurrent
-# random seeks make HDD-backed datasets slower, not faster. Each CLI also
-# exposes --num-workers to override per-run.
+# more workers help when decode is the bottleneck. Each CLI also exposes
+# --num-workers to override per-run.
 NUM_WORKERS = 8
 
 # Batches each DataLoader worker keeps queued ahead of the consumer. Deeper
