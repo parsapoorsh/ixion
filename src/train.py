@@ -142,8 +142,8 @@ def train_one_run(
         for r in validator.drain():
             if isinstance(r, ValidationResult):
                 logger.info(
-                    "validation epoch %d phase=%s loss=%.4f acc=%.4f per_class=%s (%.0fs)",
-                    r.epoch, r.phase, r.loss, r.acc, r.per_class, r.seconds,
+                    "validation epoch %d loss=%.4f acc=%.4f per_class=%s (%.0fs)",
+                    r.epoch, r.loss, r.acc, r.per_class, r.seconds,
                 )
             elif isinstance(r, AmbiguityScanResult):
                 logger.info(
@@ -209,7 +209,7 @@ def train_one_run(
                 "epoch %d done in %.0fs, throughput %.1f img/s",
                 epoch, dt, running_seen / dt,
             )
-            validator.submit(ema.module, epoch, "end")
+            validator.submit(ema.module, epoch)
             if run.scan_every_epochs > 0 and (epoch + 1) % run.scan_every_epochs == 0:
                 validator.submit_scan(ema.module, epoch)
 

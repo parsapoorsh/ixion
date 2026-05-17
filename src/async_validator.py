@@ -2,8 +2,8 @@
 
 Spawns a child process pinned to ``cuda:<device_index>`` that owns its
 own val loader and a copy of the model. The parent calls
-``submit(ema_module, epoch, phase)`` at the 50% and 100% marks of each
-epoch; the child returns ``ValidationResult`` objects which the parent
+``submit(ema_module, epoch)`` at the end of each epoch; the child
+returns ``ValidationResult`` objects which the parent
 drains opportunistically between training steps. The train loop never
 blocks on validation.
 
@@ -70,14 +70,12 @@ AMBIGUITY_OUTPUT_PATH = constants.INDEX_CACHE_DIR / "ambiguity.json"
 @dataclass
 class ValidationTask:
     epoch: int
-    phase: str  # "mid" or "end"
     state_dict: dict
 
 
 @dataclass
 class ValidationResult:
     epoch: int
-    phase: str
     loss: float
     acc: float
     per_class: list[float]
@@ -324,10 +322,7 @@ def validator_worker(
         model.load_state_dict(task.state_dict)
         t0 = time.monotonic()
         if isinstance(task, ValidationTask):
-            log.info(
-                "validation starting (epoch %d phase=%s)",
-                task.epoch, task.phase,
-            )
+            log.info("validation starting (epoch %d)", task.epoch)
             loss, acc, per_class = run_validation(
                 model,
                 val_loader,
@@ -336,13 +331,12 @@ def validator_worker(
             )
             dt = time.monotonic() - t0
             log.info(
-                "validation epoch %d phase=%s loss=%.4f acc=%.4f per_class=%s in %.0fs",
-                task.epoch, task.phase, loss, acc, per_class, dt,
+                "validation epoch %d loss=%.4f acc=%.4f per_class=%s in %.0fs",
+                task.epoch, loss, acc, per_class, dt,
             )
             result_q.put(
                 ValidationResult(
                     epoch=task.epoch,
-                    phase=task.phase,
                     loss=loss,
                     acc=acc,
                     per_class=per_class,
@@ -448,19 +442,18 @@ class AsyncValidator:
         self,
         ema_module: nn.Module,
         epoch: int,
-        phase: str,
     ) -> None:
-        if not self.child_alive(f"validation epoch {epoch} phase={phase}"):
+        if not self.child_alive(f"validation epoch {epoch}"):
             return
         cpu_sd = self.snapshot_state(ema_module)
         try:
             self.task_q.put_nowait(
-                ValidationTask(epoch=epoch, phase=phase, state_dict=cpu_sd),
+                ValidationTask(epoch=epoch, state_dict=cpu_sd),
             )
         except queue.Full:
             logger.warning(
-                "skipped validation epoch %d phase=%s: prior task still running",
-                epoch, phase,
+                "skipped validation epoch %d: prior task still running",
+                epoch,
             )
 
     def submit_scan(
