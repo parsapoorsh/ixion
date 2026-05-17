@@ -11,15 +11,22 @@ every rotation. Filesystem scanning lives in utils.index; transform recipes
 live in builders.py.
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 import torch
-from PIL import Image, UnidentifiedImageError
+from PIL import UnidentifiedImageError
 from torch.utils.data import ConcatDataset, Dataset
 from torchvision.transforms import functional as TF
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from typing import Sequence
+
+    from PIL import Image
 
 import constants
 import stats
