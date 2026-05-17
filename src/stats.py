@@ -6,7 +6,7 @@ HDD-backed datasets read in on-disk locality order), decode in parallel
 through a DataLoader using the shared ``build_eval_preprocess`` pipeline,
 reduce per-batch sum and sum-of-squares on ``config.DEVICE`` in float32
 (consumer GPUs are ~1/64 speed for float64), and accumulate on the CPU in
-float64. Result lands in ``cache/stats_<name>.json``. A spec that *does*
+float64. Result lands in ``cache/stats_<name>_<resize>x<input>.json``. A spec that *does*
 carry explicit mean/std (e.g. pinned to ImageNet) bypasses all of this
 and is returned as-is. Runnable as a CLI to pre-warm the cache before a
 training run.
