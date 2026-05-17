@@ -128,7 +128,12 @@ def main() -> None:
     model.load_state_dict(state_dict)
     model.train(False)
 
-    val_ds = build_val_dataset(config.DATASETS)
+    defaults = config.DEFAULT_BACKBONE.train_defaults
+    val_ds = build_val_dataset(
+        config.DATASETS,
+        input_size=defaults.input_size,
+        resize_size=defaults.resize_size,
+    )
     loader = DataLoader(
         val_ds,
         batch_size=args.batch_size,

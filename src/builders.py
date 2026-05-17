@@ -1,24 +1,24 @@
 """Transform factories for training and evaluation.
 
-Transforms read INPUT_SIZE/RESIZE_SIZE from config. Dataset wiring (the
-build_*_dataset functions that actually use these transforms) lives in
-datasets.py so this module has no dependency on stats or filesystem
-indexing, keeping the import graph acyclic.
+Each builder takes ``input_size`` and ``resize_size`` explicitly so
+callers can wire them from whichever source they have (a TrainDefaults,
+a Backbone's train_defaults, a CLI flag). No project-local deps beyond
+torchvision — keeps the import graph acyclic.
 """
 
 from torchvision import transforms as T
-
-import config
 
 
 def build_train_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
+    input_size: int,
+    resize_size: int,
 ) -> T.Compose:
     """Photometric-only augmentation. Any spatial flip/rotate would corrupt the label."""
     return T.Compose([
-        T.Resize(config.RESIZE_SIZE),
-        T.RandomCrop(config.INPUT_SIZE),
+        T.Resize(resize_size),
+        T.RandomCrop(input_size),
         T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
         T.RandomGrayscale(p=0.05),
         T.ToTensor(),
@@ -27,14 +27,17 @@ def build_train_transform(
     ])
 
 
-def build_eval_preprocess() -> T.Compose:
+def build_eval_preprocess(
+    input_size: int,
+    resize_size: int,
+) -> T.Compose:
     """Resize → CenterCrop → ToTensor — the pre-Normalize half of the eval
     transform. Shared with stats computation, which needs the same shape
     and dtype pipeline but cannot normalise (it's computing the normaliser).
     """
     return T.Compose([
-        T.Resize(config.RESIZE_SIZE),
-        T.CenterCrop(config.INPUT_SIZE),
+        T.Resize(resize_size),
+        T.CenterCrop(input_size),
         T.ToTensor(),
     ])
 
@@ -42,8 +45,10 @@ def build_eval_preprocess() -> T.Compose:
 def build_eval_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
+    input_size: int,
+    resize_size: int,
 ) -> T.Compose:
     return T.Compose([
-        build_eval_preprocess(),
+        build_eval_preprocess(input_size=input_size, resize_size=resize_size),
         T.Normalize(mean, std),
     ])

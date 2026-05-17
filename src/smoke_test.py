@@ -28,8 +28,10 @@ def main() -> None:
     setup_logging()
     logger.info("device = %s", config.DEVICE)
 
+    backbone = EfficientNetB0()
+    defaults = backbone.train_defaults
     model = RotationModel(
-        backbone=EfficientNetB0(),
+        backbone=backbone,
         pretrained=False,
     ).to(config.DEVICE)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
@@ -40,8 +42,17 @@ def main() -> None:
     assert sample_files, f"no example images in {eg_dir}"
 
     spec = config.DATASETS[0]
-    stats = get_stats(spec)
-    train_tf = build_train_transform(mean=stats.mean, std=stats.std)
+    stats = get_stats(
+        spec,
+        input_size=defaults.input_size,
+        resize_size=defaults.resize_size,
+    )
+    train_tf = build_train_transform(
+        mean=stats.mean,
+        std=stats.std,
+        input_size=defaults.input_size,
+        resize_size=defaults.resize_size,
+    )
     imgs = [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_CLASSES]]
     batch = torch.stack(imgs).to(config.DEVICE)
     labels = torch.tensor(range(constants.NUM_CLASSES), device=config.DEVICE)
@@ -70,6 +81,8 @@ def main() -> None:
             device=config.DEVICE,
             mean=stats.mean,
             std=stats.std,
+            input_size=defaults.input_size,
+            resize_size=defaults.resize_size,
         )
         logger.info(
             "%-25s rot=%s conf=%-9s (%.1f%%) votes=%s entropy=%.3f",

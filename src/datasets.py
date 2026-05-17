@@ -98,7 +98,11 @@ class RotationPairDataset(Dataset):
         return self.transform(img), rot_idx
 
 
-def build_train_dataset(specs: Sequence[DatasetSpec]) -> ConcatDataset:
+def build_train_dataset(
+    specs: Sequence[DatasetSpec],
+    input_size: int,
+    resize_size: int,
+) -> ConcatDataset:
     """One RotationPairDataset per source dataset, normalized with that source's
     own mean/std, then concatenated. Each image is normalized by the stats it
     was registered with, which keeps the input distribution to the model
@@ -107,17 +111,39 @@ def build_train_dataset(specs: Sequence[DatasetSpec]) -> ConcatDataset:
     parts: list[RotationPairDataset] = []
     for spec in specs:
         files = index_files(f"train_{spec.name}", [spec.train])
-        channel_stats = stats.get_stats(spec)
-        transform = build_train_transform(channel_stats.mean, channel_stats.std)
+        channel_stats = stats.get_stats(
+            spec,
+            input_size=input_size,
+            resize_size=resize_size,
+        )
+        transform = build_train_transform(
+            mean=channel_stats.mean,
+            std=channel_stats.std,
+            input_size=input_size,
+            resize_size=resize_size,
+        )
         parts.append(RotationPairDataset(ImageLoader(files), transform))
     return ConcatDataset(parts)
 
 
-def build_val_dataset(specs: Sequence[DatasetSpec]) -> ConcatDataset:
+def build_val_dataset(
+    specs: Sequence[DatasetSpec],
+    input_size: int,
+    resize_size: int,
+) -> ConcatDataset:
     parts: list[RotationPairDataset] = []
     for spec in specs:
         files = index_files(f"val_{spec.name}", [spec.val])
-        channel_stats = stats.get_stats(spec)
-        transform = build_eval_transform(channel_stats.mean, channel_stats.std)
+        channel_stats = stats.get_stats(
+            spec,
+            input_size=input_size,
+            resize_size=resize_size,
+        )
+        transform = build_eval_transform(
+            mean=channel_stats.mean,
+            std=channel_stats.std,
+            input_size=input_size,
+            resize_size=resize_size,
+        )
         parts.append(RotationPairDataset(ImageLoader(files), transform))
     return ConcatDataset(parts)

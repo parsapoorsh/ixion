@@ -30,6 +30,8 @@ class TrainDefaults:
     warmup_epochs: int
     grad_clip: float
     ema_decay: float
+    input_size: int  # crop fed to the model; arch's native size (timm convention)
+    resize_size: int  # pre-crop resize; ~1.03–1.14× input_size for RandomCrop wiggle room
 
 
 class Backbone(ABC):

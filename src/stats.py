@@ -59,9 +59,16 @@ def clear_cache() -> None:
 
 def get_stats(
     spec: DatasetSpec,
+    input_size: int,
+    resize_size: int,
     num_workers: int = constants.NUM_WORKERS,
 ) -> ChannelStats:
     """Return (mean, std) for the spec, computing+caching on first miss.
+
+    Stats depend on the actual pixels averaged, which depend on the
+    Resize→CenterCrop pipeline. The cache filename includes both sizes so
+    a different preprocess gets its own cache rather than silently
+    reusing stale numbers.
 
     If the spec already carries explicit mean/std we return those directly —
     the cache and the train-set scan are skipped entirely.
@@ -70,7 +77,7 @@ def get_stats(
         return ChannelStats(mean=spec.mean, std=spec.std)
 
     constants.INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache = constants.INDEX_CACHE_DIR / f"stats_{spec.name}.json"
+    cache = constants.INDEX_CACHE_DIR / f"stats_{spec.name}_{resize_size}x{input_size}.json"
     if cache.exists():
         with cache.open() as f:
             payload = json.load(f)
@@ -83,13 +90,18 @@ def get_stats(
     target_n = max(1, int(len(files) * config.STATS_SAMPLE_FRACTION))
     sample = sample_files(files, target_n, config.STATS_SAMPLE_SEED)
     logger.info(
-        "computing %s stats over %d sampled images (%.1f%% of %d) on %s...",
+        "computing %s stats over %d sampled images (%.1f%% of %d) on %s at %dx%d...",
         spec.name, len(sample), 100 * config.STATS_SAMPLE_FRACTION,
-        len(files), config.DEVICE,
+        len(files), config.DEVICE, resize_size, input_size,
     )
 
     t0 = time.monotonic()
-    stats = compute_stats(sample, num_workers=num_workers)
+    stats = compute_stats(
+        sample,
+        input_size=input_size,
+        resize_size=resize_size,
+        num_workers=num_workers,
+    )
     dt = time.monotonic() - t0
     logger.info(
         "%s stats: mean=%s std=%s (%.1fs, %.1f img/s)",
@@ -128,15 +140,23 @@ def sample_files(
 class StatsDataset(Dataset):
     """Decode → resize → centre-crop → tensorise for the stats DataLoader.
 
-    A fixed (INPUT_SIZE, INPUT_SIZE) crop is used so every sample has the
+    A fixed (input_size, input_size) crop is used so every sample has the
     same shape and the loader can stack them into a real batch — variable
     sizes would force batch_size=1 and kill the parallelism. Decode
     failures return ``None`` and are filtered by ``stats_collate``.
     """
 
-    def __init__(self, files: Sequence[Path]) -> None:
+    def __init__(
+        self,
+        files: Sequence[Path],
+        input_size: int,
+        resize_size: int,
+    ) -> None:
         self.files = files
-        self.transform = build_eval_preprocess()
+        self.transform = build_eval_preprocess(
+            input_size=input_size,
+            resize_size=resize_size,
+        )
 
     def __len__(self) -> int:
         return len(self.files)
@@ -155,6 +175,8 @@ def stats_collate(batch: list[torch.Tensor | None]) -> torch.Tensor | None:
 
 def compute_stats(
     files: Sequence[Path],
+    input_size: int,
+    resize_size: int,
     num_workers: int = constants.NUM_WORKERS,
     batch_size: int = 64,
 ) -> ChannelStats:
@@ -166,7 +188,7 @@ def compute_stats(
     each partial is bounded by the batch's pixel count.
     """
     loader = DataLoader(
-        StatsDataset(files),
+        StatsDataset(files, input_size=input_size, resize_size=resize_size),
         batch_size=batch_size,
         num_workers=num_workers,
         collate_fn=stats_collate,
@@ -204,15 +226,31 @@ def compute_stats(
 
 def main() -> None:
     setup_logging()
+    defaults = config.DEFAULT_BACKBONE.train_defaults
+
     p = argparse.ArgumentParser(
         description="Compute per-dataset channel mean/std and cache the result. "
-                    "By default runs every dataset in config.DATASETS.",
+                    "By default runs every dataset in config.DATASETS at the "
+                    "configured backbone's preprocess sizes.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
         "--num-workers",
         type=int,
         default=constants.NUM_WORKERS,
         help="DataLoader worker processes used for image decoding",
+    )
+    p.add_argument(
+        "--input-size",
+        type=int,
+        default=defaults.input_size,
+        help="crop size used as the model input (drives the stats cache key)",
+    )
+    p.add_argument(
+        "--resize-size",
+        type=int,
+        default=defaults.resize_size,
+        help="pre-crop resize, applied before CenterCrop",
     )
     p.add_argument(
         "--invalidate-cache",
@@ -225,10 +263,15 @@ def main() -> None:
         clear_cache()
 
     for spec in config.DATASETS:
-        stats = get_stats(spec, num_workers=args.num_workers)
+        result = get_stats(
+            spec,
+            input_size=args.input_size,
+            resize_size=args.resize_size,
+            num_workers=args.num_workers,
+        )
         logger.info(
             "%s: mean=%s std=%s",
-            spec.name, stats.mean, stats.std,
+            spec.name, result.mean, result.std,
         )
 
 

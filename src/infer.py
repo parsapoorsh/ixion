@@ -52,8 +52,15 @@ def predict_image(
     device: torch.device,
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
+    input_size: int,
+    resize_size: int,
 ) -> Prediction:
-    transform = build_eval_transform(mean=mean, std=std)
+    transform = build_eval_transform(
+        mean=mean,
+        std=std,
+        input_size=input_size,
+        resize_size=resize_size,
+    )
     views = torch.stack(
         [transform(TF.rotate(img, r, expand=False)) for r in constants.ROTATIONS]
     )

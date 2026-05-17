@@ -27,6 +27,8 @@ class ConvNeXtV2Tiny(Backbone):
         warmup_epochs=5,
         grad_clip=1.0,
         ema_decay=0.9999,
+        input_size=224,
+        resize_size=232,
     )
 
     def build(self, *, pretrained: bool) -> tuple[nn.Module, int]:

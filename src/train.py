@@ -128,8 +128,16 @@ def build_loaders(
     run: RunConfig,
 ) -> tuple[DataLoader, DataLoader]:
     logger.info("building datasets...")
-    train_ds = build_train_dataset(config.DATASETS)
-    val_ds = build_val_dataset(config.DATASETS)
+    train_ds = build_train_dataset(
+        config.DATASETS,
+        input_size=recipe.input_size,
+        resize_size=recipe.resize_size,
+    )
+    val_ds = build_val_dataset(
+        config.DATASETS,
+        input_size=recipe.input_size,
+        resize_size=recipe.resize_size,
+    )
     logger.info("train pairs: %d, val pairs: %d", len(train_ds), len(val_ds))
 
     train_loader = DataLoader(
