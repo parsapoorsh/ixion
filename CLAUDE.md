@@ -243,15 +243,15 @@ models/
                   timm.create_model and returns (module, feat_dim).
                   Add a new arch by dropping a sibling module and
                   re-exporting it from backbones/__init__.py.
-ema.py            ModelEMA — deepcopy + per-step weight averaging
 infer.py          Prediction dataclass (rotation, confidence categorical,
                   confidence_pct continuous, votes, entropy) +
                   predict_image (takes input_size/resize_size from the
                   caller, runs 4-rotation consistency + posterior averaging)
-train.py          RunConfig, ValidationResult, run_validation,
-                  save_checkpoint, cosine_with_warmup, set_lr,
-                  train_one_run (takes backbone, recipe: TrainDefaults,
-                  run: RunConfig — no TrainConfig wrapper), main
+train.py          ModelEMA (inlined — only used here), RunConfig,
+                  ValidationResult, run_validation, save_checkpoint,
+                  cosine_with_warmup, set_lr, train_one_run (takes
+                  backbone, recipe: TrainDefaults, run: RunConfig — no
+                  TrainConfig wrapper), main
 smoke_test.py     Wiring sanity test on examples/
 utils/
   image_io.py     open_rgb(path) — single entry point for opening images;
@@ -341,6 +341,8 @@ Strict rules — apply without asking:
   `train.py` calls `save_checkpoint`, it lives in `train.py`. Earlier I
   extracted `checkpoint.py`, `evaluate.py`, `schedule.py` and was told to
   put them back. They're now inlined.
+- `ModelEMA` lives in `train.py` — it's only used there. Earlier it was
+  in its own `ema.py`; inlined when the splitting rules caught it.
 - `DatasetSpec` lives in `datasets.py` alongside the dataset classes that
   consume it — it used to be in `spec.py` but the standalone file was
   one line of dataclass with no other purpose.
