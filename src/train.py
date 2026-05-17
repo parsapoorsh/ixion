@@ -126,7 +126,6 @@ def train_one_run(
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * recipe.epochs
     warmup_steps = steps_per_epoch * recipe.warmup_epochs
-    mid_epoch_step = steps_per_epoch // 2
     logger.info(
         "%d epochs x %d steps = %d total (warmup %d steps)",
         recipe.epochs, steps_per_epoch, total_steps, warmup_steps,
@@ -203,8 +202,6 @@ def train_one_run(
                         "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
                         epoch, global_step, total_steps, avg_loss, acc, lr_now,
                     )
-                if batch_idx == mid_epoch_step:
-                    validator.submit(ema.module, epoch, "mid")
                 global_step += 1
 
             dt = time.monotonic() - epoch_start
