@@ -167,7 +167,7 @@ def train_one_run(
                 leave=False,
                 file=sys.stdout,
             )
-            for batch_idx, (imgs, labels) in enumerate(pbar):
+            for imgs, labels in pbar:
                 log_results()
                 imgs = imgs.to(config.DEVICE, non_blocking=True)
                 labels = labels.to(config.DEVICE, non_blocking=True)
