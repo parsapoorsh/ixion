@@ -56,6 +56,13 @@ VALIDATOR_WORKERS = 4
 SHUTDOWN_TIMEOUT_S = 30.0
 VALIDATION_LOG_EVERY = 50
 SCAN_LOG_EVERY = 50
+# Per-image scan batch. Each image expands to 4 rotation views before the
+# forward pass, so this value × 4 is what actually hits the model. Sized
+# for the GTX 1660 SUPER's ~5.6 GiB usable VRAM at the 4 GiB target —
+# measured on EfficientNet-B0 at 224²: peak_reserved=3.92 GiB. Reduce if
+# you swap to a heavier backbone (ConvNeXt-V2-Tiny activations are
+# ~2-3× B0's).
+SCAN_BATCH_SIZE = 128
 AMBIGUITY_OUTPUT_PATH = constants.INDEX_CACHE_DIR / "ambiguity.json"
 
 
@@ -348,7 +355,7 @@ def validator_worker(
                 dataset_specs=dataset_specs,
                 device=device,
                 dtype=torch.float16,
-                batch_size=recipe.batch_size,
+                batch_size=SCAN_BATCH_SIZE,
                 recipe_input_size=recipe.input_size,
                 recipe_resize_size=recipe.resize_size,
             )
