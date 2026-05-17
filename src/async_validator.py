@@ -52,7 +52,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-VALIDATOR_WORKERS = 4
+VALIDATOR_WORKERS = 8
+VALIDATOR_PREFETCH = 6
 SHUTDOWN_TIMEOUT_S = 30.0
 VALIDATION_LOG_EVERY = 50
 SCAN_LOG_EVERY = 50
@@ -180,7 +181,7 @@ def scan_dataset(
             num_workers=VALIDATOR_WORKERS,
             pin_memory=True,
             persistent_workers=False,
-            prefetch_factor=constants.PREFETCH_FACTOR,
+            prefetch_factor=VALIDATOR_PREFETCH,
         )
         logger.info("scanning %s (%d images)", spec.name, len(ds))
         n_batches = len(loader)
