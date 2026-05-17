@@ -27,7 +27,7 @@ from tqdm.auto import tqdm
 import config
 import constants
 import stats
-from async_validator import AsyncValidator
+from async_validator import AmbiguityScanResult, AsyncValidator, ValidationResult
 from datasets import build_train_dataset
 from models import Backbone, ModelEMA, RotationModel, TrainDefaults
 from utils.index import clear_cache
@@ -46,6 +46,7 @@ class RunConfig:
     prefetch_factor: int = constants.PREFETCH_FACTOR
     seed: int = 42
     log_every: int = 50
+    scan_every_epochs: int = 5  # 0 disables the ambiguity scan
 
 
 def save_checkpoint(
@@ -140,10 +141,16 @@ def train_one_run(
 
     def log_results() -> None:
         for r in validator.drain():
-            logger.info(
-                "validation epoch %d phase=%s loss=%.4f acc=%.4f per_class=%s (%.0fs)",
-                r.epoch, r.phase, r.loss, r.acc, r.per_class, r.seconds,
-            )
+            if isinstance(r, ValidationResult):
+                logger.info(
+                    "validation epoch %d phase=%s loss=%.4f acc=%.4f per_class=%s (%.0fs)",
+                    r.epoch, r.phase, r.loss, r.acc, r.per_class, r.seconds,
+                )
+            elif isinstance(r, AmbiguityScanResult):
+                logger.info(
+                    "ambiguity scan epoch %d -> %s (weak=%d ambiguous=%d total=%d in %.0fs)",
+                    r.epoch, r.output_path, r.n_weak, r.n_ambiguous, r.n_total, r.seconds,
+                )
 
     try:
         global_step = 0
@@ -206,6 +213,8 @@ def train_one_run(
                 epoch, dt, running_seen / dt,
             )
             validator.submit(ema.module, epoch, "end")
+            if run.scan_every_epochs > 0 and (epoch + 1) % run.scan_every_epochs == 0:
+                validator.submit_scan(ema.module, epoch)
 
             ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
             save_checkpoint(ckpt, model, ema, extras={"epoch": epoch})
@@ -258,6 +267,12 @@ def main() -> None:
         help="torch RNG seed for the training loop",
     )
     p.add_argument(
+        "--scan-every",
+        type=int,
+        default=RunConfig.scan_every_epochs,
+        help="emit cache/ambiguity.json every N epochs from cuda:1 (0 disables)",
+    )
+    p.add_argument(
         "--invalidate-cache",
         action="store_true",
         help="delete cached file-index and per-dataset stats JSONs before running",
@@ -278,6 +293,7 @@ def main() -> None:
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         seed=args.seed,
+        scan_every_epochs=args.scan_every,
     )
     train_one_run(backbone, recipe, run)
 
