@@ -53,6 +53,8 @@ logger = logging.getLogger(__name__)
 
 VALIDATOR_WORKERS = 4
 SHUTDOWN_TIMEOUT_S = 30.0
+VALIDATION_LOG_EVERY = 50
+SCAN_LOG_EVERY = 50
 AMBIGUITY_OUTPUT_PATH = constants.INDEX_CACHE_DIR / "ambiguity.json"
 
 
@@ -172,8 +174,14 @@ def scan_dataset(
             prefetch_factor=constants.PREFETCH_FACTOR,
         )
         logger.info("scanning %s (%d images)", spec.name, len(ds))
+        n_batches = len(loader)
 
-        for views, idxs in loader:
+        for batch_idx, (views, idxs) in enumerate(loader):
+            if batch_idx % SCAN_LOG_EVERY == 0:
+                logger.info(
+                    "scan %s batch %d/%d kept_so_far=%d",
+                    spec.name, batch_idx, n_batches, len(scored),
+                )
             b = views.size(0)
             views = views.to(device, non_blocking=True).view(b * n, *views.shape[2:])
             with torch.autocast(device_type=device.type, dtype=dtype):
@@ -221,8 +229,9 @@ def run_validation(
     total_loss = 0.0
     total_n = 0
     loss_fn = nn.CrossEntropyLoss()
+    n_batches = len(loader)
 
-    for imgs, labels in loader:
+    for batch_idx, (imgs, labels) in enumerate(loader):
         imgs = imgs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         with torch.autocast(device_type=device.type, dtype=dtype):
@@ -235,6 +244,12 @@ def run_validation(
             correct[c] += (preds[mask] == c).sum()
         total_loss += loss.item() * imgs.size(0)
         total_n += imgs.size(0)
+        if batch_idx % VALIDATION_LOG_EVERY == 0:
+            logger.info(
+                "validation batch %d/%d running_acc=%.4f",
+                batch_idx, n_batches,
+                (correct.sum() / seen.sum().clamp(min=1)).item(),
+            )
 
     return (
         total_loss / max(1, total_n),
@@ -286,6 +301,10 @@ def validator_worker(
         model.load_state_dict(task.state_dict)
         t0 = time.monotonic()
         if isinstance(task, ValidationTask):
+            log.info(
+                "validation starting (epoch %d phase=%s)",
+                task.epoch, task.phase,
+            )
             loss, acc, per_class = run_validation(
                 model,
                 val_loader,
