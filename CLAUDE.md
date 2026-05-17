@@ -80,10 +80,7 @@ Per-backbone differences:
   VRAM; 64 fits with headroom)
 
 Wall-clock estimate (ConvNeXt-V2-Tiny): ~5 days for 100 epochs on the
-5060 Ti. EfficientNet-B0 is ~10× less compute, so plausibly ~12h —
-but the loop has historically been HDD-bound, in which case shrinking
-the model doesn't help. Diagnose with `nvidia-smi dmon -s u` before
-assuming compute is the bottleneck.
+5060 Ti. EfficientNet-B0 is ~10× less compute, so plausibly ~12h.
 
 ### Augmentations — be careful here
 
@@ -142,13 +139,11 @@ assuming compute is the bottleneck.
   parallelise decode, the per-batch sum/sum-of-squares reduces on
   `config.DEVICE` in float32, and accumulation happens on CPU in float64
   (consumer GPUs are ~1/64 speed for float64). The sample is sorted by
-  path *after* sampling so HDD-backed datasets read in on-disk locality
-  order — without this, random scatter across a 1.2M-file tree thrashes
-  seeks once the OS page cache runs out (~700 img/s → ~150 img/s in the
-  wild). `prefetch_factor=constants.PREFETCH_FACTOR` (default 4) keeps each
-  worker's queue deep enough to mask remaining I/O latency; `train` exposes
-  `--prefetch-factor` to widen it further when the GPU shows the
-  bursty-0-to-100 utilization pattern that signals data starvation.
+  path *after* sampling so reads happen in on-disk locality order — a
+  cheap win regardless of storage medium. `prefetch_factor=
+  constants.PREFETCH_FACTOR` (default 4) keeps each worker's queue deep
+  enough to mask decode latency; `train` exposes `--prefetch-factor` to
+  widen it further if the GPU shows bursty utilization.
   tqdm shows progress in images/s with a
   per-image `pbar.update(b)`. Changing `STATS_SAMPLE_FRACTION` needs
   `--invalidate-cache`; the cache file doesn't track which fraction
@@ -158,9 +153,7 @@ assuming compute is the bottleneck.
   Don't "fix" by hardcoding canonical numbers.
 - **Worker count**: `constants.NUM_WORKERS` (default 8) is the single source
   of truth for DataLoader workers across `train` and `stats`. Every CLI
-  exposes `--num-workers` to override per-run. Too many workers make HDDs
-  slower, not faster — drop the number if the bar stalls and CPU usage
-  falls.
+  exposes `--num-workers` to override per-run.
 - **Checkpointing**: `train.py` dumps `checkpoints/epoch_NNN.pt` after every
   epoch (both raw and EMA state dicts, plus `epoch` and the latest val
   `acc`). Earlier we kept only `best.pt` and `last.pt`; switched to
@@ -469,16 +462,12 @@ Strict rules — apply without asking:
 - `tqdm` is a new dep introduced by `stats.py`. Add to requirements if
   setting up a fresh venv.
 - No checkpoint exists yet. First real run goes through `train.py`
-  end-to-end. Default backbone is now `EfficientNetB0` (was
-  `ConvNeXtV2Tiny`) — the switch was made because a 9h/epoch
-  observation suggested compute or I/O was the bottleneck on the
-  larger arch. Diagnose data-loader saturation before assuming model
-  size is the lever; the loop has historically been HDD-bound and
-  shrinking the model doesn't help in that regime.
-- ImageNet stats have been computed once on this machine at 232×224 —
-  wall-clock is ~5 minutes for 5% of the train split at ~215 img/s
-  (HDD-bound after the page cache is exhausted; the path-sort +
-  prefetch tweaks help but there's a hard disk-bandwidth ceiling).
+  end-to-end. Default backbone is `EfficientNetB0` (switched from
+  `ConvNeXtV2Tiny` for a ~10× compute reduction).
+- Datasets live on SSD at `/media/poweruser/data/2-stuff/datasets/`.
+  Earlier they were on an HDD at `/mnt/archive/...` and the loop was
+  I/O-bound; the move was made to let compute be the actual ceiling.
+- ImageNet stats have been computed once on this machine at 232×224.
   The earlier `cache/stats_*.json` (size-less filenames) won't match
   the new `stats_<name>_<resize>x<input>.json` and will be recomputed.
 - ONNX export is planned but deliberately deferred.
