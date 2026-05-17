@@ -71,7 +71,7 @@ def index_files(name: str, roots: Sequence[Path]) -> "PathList":
     return PathList(trie)
 
 
-def paths_to_trie(paths: Sequence[Path]) -> dict:
+def paths_to_trie(paths: Sequence[Path]) -> dict[str, object]:
     """Collapse a list of paths into a nested dict keyed by path component.
 
     Files become leaves with the value ``None``; directories become subdicts.
