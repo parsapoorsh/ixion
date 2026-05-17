@@ -104,6 +104,20 @@ class PathList(Sequence[Path]):
         self.cum_counts: dict[int, list[int]] = {}
         self.length = self.build_index(trie)
 
+    def __getstate__(self) -> dict:
+        # children/cum_counts key on id(node), which is not stable across
+        # serialization — when a DataLoader spawn-worker reconstructs this,
+        # the trie dicts get fresh memory addresses and the cached keys no
+        # longer match. Ship only the trie and rebuild the index in the
+        # recipient process.
+        return {"root": self.root}
+
+    def __setstate__(self, state: dict) -> None:
+        self.root = state["root"]
+        self.children = {}
+        self.cum_counts = {}
+        self.length = self.build_index(self.root)
+
     def build_index(self, node: dict) -> int:
         keys: list[str] = []
         cum: list[int] = []
