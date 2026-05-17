@@ -11,6 +11,7 @@ implement ``build``) and re-export it from
 """
 
 from models.base import Backbone, TrainDefaults
+from models.ema import ModelEMA
 from models.rotation import RotationModel
 
-__all__ = ["RotationModel", "Backbone", "TrainDefaults"]
+__all__ = ["RotationModel", "Backbone", "TrainDefaults", "ModelEMA"]
