@@ -90,14 +90,14 @@ def run_validation(
     total_loss = 0.0
     total_n = 0
     loss_fn = nn.CrossEntropyLoss()
-    pbar = tqdm(
+
+    for imgs, labels in tqdm(
         loader,
         desc="validation",
         unit="batch",
         leave=False,
         file=sys.stdout,
-    )
-    for imgs, labels in pbar:
+    ):
         imgs = imgs.to(config.DEVICE, non_blocking=True)
         labels = labels.to(config.DEVICE, non_blocking=True)
         with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
@@ -110,6 +110,7 @@ def run_validation(
             correct[c] += (preds[mask] == c).sum()
         total_loss += loss.item() * imgs.size(0)
         total_n += imgs.size(0)
+
     return ValidationResult(
         loss=total_loss / max(1, total_n),
         acc=(correct.sum() / seen.sum().clamp(min=1)).item(),
