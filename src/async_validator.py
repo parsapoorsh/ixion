@@ -348,7 +348,10 @@ class AsyncValidator:
                 dataset_specs,
                 device_index,
             ),
-            daemon=True,
+            # Not daemonic: this process spawns its own DataLoader workers,
+            # and the multiprocessing rule is that daemonic parents can't
+            # have children. shutdown() in the try/finally handles cleanup.
+            daemon=False,
         )
         self.process.start()
         logger.info(
