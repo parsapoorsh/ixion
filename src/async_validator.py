@@ -142,6 +142,7 @@ def scan_dataset(
     """
     model.train(False)
     scored: list[tuple[float, str]] = []
+    seen_paths: set[str] = set()
     n_weak = 0
     n_ambiguous = 0
 
@@ -207,7 +208,15 @@ def scan_dataset(
             keep_conf = confidence[mask].cpu().tolist()
             keep_counts = top_count[mask].cpu().tolist()
             for ki, kc, tc in zip(keep_idxs, keep_conf, keep_counts):
-                scored.append((kc, str(files[ki])))
+                # AmbiguityScanDataset retries past unreadable images by
+                # probing forward, so the same idx can arrive in multiple
+                # batches. Dedupe here so a path lands in scored at most
+                # once and n_weak/n_ambiguous don't double-count.
+                path = str(files[ki])
+                if path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                scored.append((kc, path))
                 if tc == n - 1:
                     n_weak += 1
                 else:
