@@ -372,12 +372,23 @@ class AsyncValidator:
             device_index, self.process.pid,
         )
 
+    def child_alive(self, what: str) -> bool:
+        if self.process.is_alive():
+            return True
+        logger.error(
+            "validator child is dead (exit code %s); dropping %s",
+            self.process.exitcode, what,
+        )
+        return False
+
     def submit(
         self,
         ema_module: nn.Module,
         epoch: int,
         phase: str,
     ) -> None:
+        if not self.child_alive(f"validation epoch {epoch} phase={phase}"):
+            return
         cpu_sd = self.snapshot_state(ema_module)
         try:
             self.task_q.put_nowait(
@@ -394,6 +405,8 @@ class AsyncValidator:
         ema_module: nn.Module,
         epoch: int,
     ) -> None:
+        if not self.child_alive(f"ambiguity scan epoch {epoch}"):
+            return
         cpu_sd = self.snapshot_state(ema_module)
         try:
             self.task_q.put_nowait(
