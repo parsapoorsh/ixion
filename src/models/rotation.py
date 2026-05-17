@@ -18,7 +18,7 @@ class RotationModel(nn.Module):
     def __init__(
         self,
         backbone: Backbone,
-        pretrained: bool = False,
+        pretrained: bool,
         drop_rate: float = 0.2,
     ) -> None:
         super().__init__()
