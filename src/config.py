@@ -25,15 +25,15 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 DATASETS = [
     DatasetSpec(
         name="imagenet",
-        train=Path("/mnt/archive/2-stuff/datasets/ILSVRC2017/Data/CLS-LOC/train"),
-        val=Path("/mnt/archive/2-stuff/datasets/ILSVRC2017/Data/CLS-LOC/val"),
+        train=Path("/media/poweruser/data/2-stuff/datasets/ILSVRC2017/Data/CLS-LOC/train"),
+        val=Path("/media/poweruser/data/2-stuff/datasets/ILSVRC2017/Data/CLS-LOC/val"),
         mean=None,
         std=None,
     ),
     DatasetSpec(
         name="coco",
-        train=Path("/mnt/archive/2-stuff/datasets/coco/train2017"),
-        val=Path("/mnt/archive/2-stuff/datasets/coco/val2017"),
+        train=Path("/media/poweruser/data/2-stuff/datasets/coco/train2017"),
+        val=Path("/media/poweruser/data/2-stuff/datasets/coco/val2017"),
         mean=None,
         std=None,
     ),
