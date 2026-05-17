@@ -53,8 +53,9 @@ def main() -> None:
         input_size=defaults.input_size,
         resize_size=defaults.resize_size,
     )
-    imgs = [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_CLASSES]]
-    batch = torch.stack(imgs).to(config.DEVICE)
+    batch = torch.stack(
+        [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_CLASSES]]
+    ).to(config.DEVICE)
     labels = torch.tensor(range(constants.NUM_CLASSES), device=config.DEVICE)
 
     model.train()
