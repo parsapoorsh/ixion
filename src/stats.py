@@ -1,14 +1,14 @@
 """Per-dataset channel mean/std — computed once on GPU, cached to disk.
 
 When a DatasetSpec leaves mean/std as None, we sample
-``config.STATS_SAMPLE_FRACTION`` of the train split (sorted by path so
-HDD-backed datasets read in on-disk locality order), decode in parallel
-through a DataLoader using the shared ``build_eval_preprocess`` pipeline,
+``config.STATS_SAMPLE_FRACTION`` of the train split (sorted by path for
+on-disk locality), wrap it in an ``ImageLoader`` with the shared
+``build_eval_preprocess`` pipeline, decode in parallel through a DataLoader,
 reduce per-batch sum and sum-of-squares on ``config.DEVICE`` in float32
 (consumer GPUs are ~1/64 speed for float64), and accumulate on the CPU in
-float64. Result lands in ``cache/stats_<name>_<resize>x<input>.json``. A spec that *does*
-carry explicit mean/std (e.g. pinned to ImageNet) bypasses all of this
-and is returned as-is. Runnable as a CLI to pre-warm the cache before a
+float64. Result lands in ``cache/stats_<name>_<resize>x<input>.json``. A spec
+that *does* carry explicit mean/std (e.g. pinned to ImageNet) bypasses all of
+this and is returned as-is. Runnable as a CLI to pre-warm the cache before a
 training run.
 """
 
