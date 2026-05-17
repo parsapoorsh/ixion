@@ -187,7 +187,13 @@ builders.py       build_train_transform, build_eval_preprocess (Resize →
                   CenterCrop → ToTensor; shared with StatsDataset),
                   build_eval_transform (preprocess + Normalize). Transforms
                   only — no stats / index / DatasetSpec dependency.
-model.py          RotationModel (ConvNeXt-V2-Tiny + head + temperature)
+models/
+  __init__.py     RotationModel re-export + BACKBONES registry
+  rotation.py     RotationModel (arch-agnostic head + temperature; resolves
+                  backbone via BACKBONES at instantiation time)
+  convnextv2_tiny.py
+                  build(*, pretrained) -> (backbone, feat_dim); add new
+                  archs as sibling modules and register in __init__.py
 ema.py            ModelEMA — deepcopy + per-step weight averaging
 infer.py          Prediction dataclass (rotation, confidence categorical,
                   confidence_pct continuous, votes, entropy) +
