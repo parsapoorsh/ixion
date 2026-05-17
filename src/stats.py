@@ -23,13 +23,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import config
 import constants
+import datasets as datasets_mod
 from builders import build_eval_preprocess
-from utils.image_io import open_rgb
 from utils.index import index_files
 from utils.logsetup import setup_logging
 
@@ -137,42 +137,6 @@ def sample_files(
     return sampled
 
 
-class StatsDataset(Dataset):
-    """Decode → resize → centre-crop → tensorise for the stats DataLoader.
-
-    A fixed (input_size, input_size) crop is used so every sample has the
-    same shape and the loader can stack them into a real batch — variable
-    sizes would force batch_size=1 and kill the parallelism. Decode
-    failures return ``None`` and are filtered by ``stats_collate``.
-    """
-
-    def __init__(
-        self,
-        files: Sequence[Path],
-        input_size: int,
-        resize_size: int,
-    ) -> None:
-        self.files = files
-        self.transform = build_eval_preprocess(
-            input_size=input_size,
-            resize_size=resize_size,
-        )
-
-    def __len__(self) -> int:
-        return len(self.files)
-
-    def __getitem__(self, idx: int) -> torch.Tensor | None:
-        img = open_rgb(self.files[idx])
-        return self.transform(img)
-
-
-def stats_collate(batch: list[torch.Tensor | None]) -> torch.Tensor | None:
-    items = [x for x in batch if x is not None]
-    if not items:
-        return None
-    return torch.stack(items)
-
-
 def compute_stats(
     files: Sequence[Path],
     input_size: int,
@@ -187,11 +151,11 @@ def compute_stats(
     tensors on the CPU in float64. Per-batch precision stays tight because
     each partial is bounded by the batch's pixel count.
     """
+    transform = build_eval_preprocess(input_size=input_size, resize_size=resize_size)
     loader = DataLoader(
-        StatsDataset(files, input_size=input_size, resize_size=resize_size),
+        datasets_mod.ImageLoader(files, transform=transform),
         batch_size=batch_size,
         num_workers=num_workers,
-        collate_fn=stats_collate,
         pin_memory=config.DEVICE.type == "cuda",
         persistent_workers=num_workers > 0,
         prefetch_factor=4 if num_workers > 0 else None,
@@ -203,8 +167,6 @@ def compute_stats(
 
     with tqdm(total=len(files), desc="stats", unit="img") as pbar:
         for batch in loader:
-            if batch is None:
-                continue
             batch = batch.to(config.DEVICE, non_blocking=True)
 
             b, _, h, w = batch.shape

@@ -23,6 +23,7 @@ from torch.utils.data import ConcatDataset, Dataset
 from torchvision.transforms import functional as TF
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from typing import Sequence
 
@@ -53,7 +54,11 @@ class DatasetSpec:
 
 
 class ImageLoader(Dataset):
-    """Returns PIL.Image (RGB) by index from a path source.
+    """Loads images by index from a path source, optionally applying a transform.
+
+    Without a transform, returns a ``PIL.Image`` (used by ``RotationPairDataset``
+    which applies its own transform after rotation). With a transform, returns the
+    transformed tensor (used by the stats DataLoader directly).
 
     ``files`` only needs to support ``__len__`` and ``__getitem__(idx)`` —
     anything sequence-like works (a list, an ``index.PathList`` view over a
@@ -61,14 +66,18 @@ class ImageLoader(Dataset):
     keep the index in a compact representation.
     """
 
-    def __init__(self, files: Sequence[Path]) -> None:
+    def __init__(self, files: Sequence[Path], transform: Callable | None = None) -> None:
         self.files = files
+        self.transform = transform
 
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx: int) -> Image.Image:
-        return open_rgb(self.files[idx])
+    def __getitem__(self, idx: int) -> Image.Image | torch.Tensor:
+        img = open_rgb(self.files[idx])
+        if self.transform is not None:
+            return self.transform(img)
+        return img
 
 
 class RotationPairDataset(Dataset):
@@ -78,7 +87,7 @@ class RotationPairDataset(Dataset):
     img_idx = i // 4 and rot_idx = i % 4. Rotation label is rot_idx.
     """
 
-    def __init__(self, base: ImageLoader, transform) -> None:
+    def __init__(self, base: ImageLoader, transform: Callable) -> None:
         self.base = base
         self.transform = transform
 
