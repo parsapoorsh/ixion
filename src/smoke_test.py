@@ -42,14 +42,14 @@ def main() -> None:
     assert sample_files, f"no example images in {eg_dir}"
 
     spec = config.DATASETS[0]
-    stats = get_stats(
+    channel_stats = get_stats(
         spec,
         input_size=defaults.input_size,
         resize_size=defaults.resize_size,
     )
     train_tf = build_train_transform(
-        mean=stats.mean,
-        std=stats.std,
+        mean=channel_stats.mean,
+        std=channel_stats.std,
         input_size=defaults.input_size,
         resize_size=defaults.resize_size,
     )
@@ -79,8 +79,8 @@ def main() -> None:
             model=model,
             img=img,
             device=config.DEVICE,
-            mean=stats.mean,
-            std=stats.std,
+            mean=channel_stats.mean,
+            std=channel_stats.std,
             input_size=defaults.input_size,
             resize_size=defaults.resize_size,
         )
