@@ -22,8 +22,10 @@ import json
 import logging
 import multiprocessing as mp
 import queue
+import threading
 import time
 from dataclasses import dataclass
+from logging.handlers import QueueHandler
 from typing import TYPE_CHECKING
 
 import torch
@@ -40,11 +42,10 @@ from datasets import build_val_dataset
 from models import RotationModel
 from utils.image_io import open_rgb
 from utils.index import index_files
-from utils.logsetup import setup_logging
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
+    from pathlib import Path  # noqa: F401  # used in type annotations elsewhere
 
     from datasets import DatasetSpec
     from models import Backbone, TrainDefaults
@@ -261,13 +262,17 @@ def run_validation(
 def validator_worker(
     task_q: mp.Queue,
     result_q: mp.Queue,
+    log_q: mp.Queue,
     backbone: Backbone,
     recipe: TrainDefaults,
     dataset_specs: list[DatasetSpec],
     device_index: int,
-    log_path: Path,
 ) -> None:
-    setup_logging(log_path=log_path, console=False)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
+    root.addHandler(QueueHandler(log_q))
     log = logging.getLogger(__name__)
     log.info("validator worker starting on cuda:%d", device_index)
     torch.cuda.set_device(device_index)
@@ -360,28 +365,47 @@ def validator_worker(
             log.error("unknown task type: %r", type(task))
 
 
+def log_listener_loop(log_q: mp.Queue) -> None:
+    """Pull LogRecord objects emitted by the validator child and dispatch
+    them through the parent's root logger. The parent's TqdmLoggingHandler
+    coordinates with the active progress bar, so child log lines appear
+    cleanly above it instead of overwriting it.
+    """
+    while True:
+        record = log_q.get()
+        if record is None:
+            return
+        logging.getLogger(record.name).handle(record)
+
+
 class AsyncValidator:
     def __init__(
         self,
         backbone: Backbone,
         recipe: TrainDefaults,
         dataset_specs: list[DatasetSpec],
-        log_path: Path,
         device_index: int = 1,
     ) -> None:
         ctx = mp.get_context("spawn")
         self.task_q: mp.Queue = ctx.Queue(maxsize=1)
         self.result_q: mp.Queue = ctx.Queue()
+        self.log_q: mp.Queue = ctx.Queue()
+        self.log_listener = threading.Thread(
+            target=log_listener_loop,
+            args=(self.log_q,),
+            daemon=True,
+        )
+        self.log_listener.start()
         self.process = ctx.Process(
             target=validator_worker,
             args=(
                 self.task_q,
                 self.result_q,
+                self.log_q,
                 backbone,
                 recipe,
                 dataset_specs,
                 device_index,
-                log_path,
             ),
             # Not daemonic: this process spawns its own DataLoader workers,
             # and the multiprocessing rule is that daemonic parents can't
@@ -465,3 +489,5 @@ class AsyncValidator:
             )
             self.process.terminate()
             self.process.join(timeout=5.0)
+        self.log_q.put(None)
+        self.log_listener.join(timeout=5.0)

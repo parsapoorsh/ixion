@@ -105,7 +105,6 @@ def train_one_run(
     backbone: Backbone,
     recipe: TrainDefaults,
     run: RunConfig,
-    log_path: Path,
 ) -> None:
     torch.manual_seed(run.seed)
     train_loader = build_train_loader(recipe, run)
@@ -137,7 +136,6 @@ def train_one_run(
         backbone=backbone,
         recipe=recipe,
         dataset_specs=config.DATASETS,
-        log_path=log_path,
         device_index=1,
     )
 
@@ -230,7 +228,7 @@ def train_one_run(
 
 
 def main() -> None:
-    log_path = setup_logging()
+    setup_logging()
     backbone = config.DEFAULT_BACKBONE
     defaults = backbone.train_defaults
 
@@ -297,7 +295,7 @@ def main() -> None:
         seed=args.seed,
         scan_every_epochs=args.scan_every,
     )
-    train_one_run(backbone, recipe, run, log_path=log_path)
+    train_one_run(backbone, recipe, run)
 
 
 if __name__ == "__main__":
