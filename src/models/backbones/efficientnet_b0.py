@@ -20,7 +20,7 @@ class EfficientNetB0(Backbone):
     # shared defaults; tune once a real run shows what wants to move.
     train_defaults: ClassVar[TrainDefaults] = TrainDefaults(
         epochs=100,
-        batch_size=256,
+        batch_size=288,
         lr=1e-3,
         weight_decay=0.05,
         label_smoothing=0.1,
