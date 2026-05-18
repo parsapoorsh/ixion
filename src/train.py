@@ -17,7 +17,7 @@ import math
 import sys
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -32,9 +32,6 @@ from datasets import build_train_dataset
 from models import Backbone, ModelEMA, RotationModel, TrainDefaults
 from utils.index import clear_cache
 from utils.logsetup import setup_logging
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +106,7 @@ def train_one_run(
     backbone: Backbone,
     recipe: TrainDefaults,
     run: RunConfig,
+    resume_from: Path | None = None,
 ) -> None:
     torch.manual_seed(run.seed)
     train_loader = build_train_loader(recipe, run)
@@ -135,6 +133,21 @@ def train_one_run(
         recipe.epochs, steps_per_epoch, total_steps, warmup_steps,
     )
 
+    start_epoch = 0
+    if resume_from is not None:
+        # Restore model + EMA shadow + EMA step. Optimizer state is not
+        # checkpointed; Adam's moment estimates re-warm in a few hundred
+        # steps, which is negligible against the LR schedule.
+        payload = torch.load(resume_from, map_location=config.DEVICE, weights_only=False)
+        model.load_state_dict(payload["model"])
+        ema.module.load_state_dict(payload["ema"])
+        ema.step = int(payload.get("ema_step", 0))
+        start_epoch = int(payload["epoch"]) + 1
+        logger.info(
+            "resumed from %s (next epoch=%d, ema_step=%d)",
+            resume_from, start_epoch, ema.step,
+        )
+
     validator = AsyncValidator(
         backbone=backbone,
         recipe=recipe,
@@ -156,8 +169,8 @@ def train_one_run(
                 )
 
     try:
-        global_step = 0
-        for epoch in range(recipe.epochs):
+        global_step = start_epoch * steps_per_epoch
+        for epoch in range(start_epoch, recipe.epochs):
             model.train()
             epoch_start = time.monotonic()
             running_loss = 0.0
@@ -278,6 +291,12 @@ def main() -> None:
         action="store_true",
         help="delete cached file-index and per-dataset stats JSONs before running",
     )
+    p.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="path to an epoch_NNN.pt checkpoint to resume from (model, ema, ema_step restored; optimizer re-warms)",
+    )
     args = p.parse_args()
 
     if args.invalidate_cache:
@@ -296,7 +315,12 @@ def main() -> None:
         seed=args.seed,
         scan_every_epochs=args.scan_every,
     )
-    train_one_run(backbone, recipe, run)
+    train_one_run(
+        backbone,
+        recipe,
+        run,
+        resume_from=args.resume,
+    )
 
 
 if __name__ == "__main__":
