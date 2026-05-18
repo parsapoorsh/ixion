@@ -170,6 +170,18 @@ def train_one_run(
 
     try:
         global_step = start_epoch * steps_per_epoch
+        if resume_from is not None:
+            # Kick off a validation of the loaded checkpoint right away so the
+            # resumed run reports a real val acc at startup instead of waiting
+            # until the end of the first resumed epoch. The result drains
+            # through log_results() once the child finishes.
+            resumed_epoch = start_epoch - 1
+            logger.info(
+                "submitting startup validation for resumed epoch %d",
+                resumed_epoch,
+            )
+            validator.submit(ema.module, resumed_epoch)
+
         for epoch in range(start_epoch, recipe.epochs):
             model.train()
             epoch_start = time.monotonic()
