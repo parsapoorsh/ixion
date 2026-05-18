@@ -28,20 +28,16 @@ measurements look higher than the eventual deployment.
 
 ## Model architecture
 
-- **Backbone**: pluggable. Each arch is a `Backbone` subclass under
-  `models/backbones/` (ABC + `name`/`train_defaults` ClassVars +
-  `build(*, pretrained) -> (nn.Module, feat_dim)`). Two are shipped:
-  `EfficientNetB0` (5.3M params, ~0.4 GFLOPs at 224²) - the current
-  default in `config.DEFAULT_BACKBONE` - and `ConvNeXtV2Tiny` (28M
-  params, kept because it has more capacity for ambiguous edge cases).
-  Trained from scratch - `pretrained=False`. The timm IDs still
-  reference the canonical variant tags (`.fcmae_ft_in22k_in1k` etc.)
-  because we want the architecture; the flag just skips the weights.
-  Switching arch is one line: change the import + instantiation in
-  `config.py`.
-- **Head**: `AdaptiveAvgPool → LayerNorm(feat_dim) → Dropout(0.2)
-  → Linear(feat_dim, 4)`, where `feat_dim` is whatever the chosen
-  backbone exposes (1280 for B0, 768 for ConvNeXt-V2-Tiny).
+- **Backbone**: EfficientNet-B0 via timm (~5.3M params, ~0.4 GFLOPs
+  at 224²), built directly inside `RotationModel.__init__` with
+  `global_pool="avg"` and `num_classes=0`. Trained from scratch
+  (`pretrained=False`). There used to be a `Backbone` ABC under
+  `models/backbones/` so the arch was swappable with
+  ConvNeXt-V2-Tiny; both the abstraction and the second arch were
+  ripped out once the project settled on B0.
+- **Head**: `LayerNorm(1280) → Dropout(0.2) → Linear(1280, 4)`. The
+  global average pool is provided by timm; the head consumes the
+  pooled features directly.
 - **No temperature buffer**: temperature scaling was wired up but never
   fit (no checkpoints exist), so it was pulled. Reintroduce when a
   calibration step actually matters.
@@ -53,19 +49,21 @@ measurements look higher than the eventual deployment.
 Single phase, from random init. No frozen warm-up phase, no
 noise-filtering pass - both were over-engineered.
 
-Recipe knobs live per-backbone in a `TrainDefaults` dataclass on the
-Backbone class (`epochs`, `lr`, `weight_decay`, `label_smoothing`,
-`warmup_epochs`, `grad_clip`, `ema_decay`, `input_size`,
-`resize_size`). `batch_size` is **not** a recipe knob — it's a
-hardware decision and lives only on the CLI. `train.main()` reads the
-recipe from `config.DEFAULT_BACKBONE.train_defaults` and applies CLI
-overrides via `dataclasses.replace`. There's no `TrainConfig` wrapper —
-`train_one_run` takes `(backbone, recipe: TrainDefaults, run:
-RunConfig, batch_size: int)` directly. `RunConfig` carries the
-process/IO knobs (`device`, `num_workers`, `prefetch_factor`, `seed`,
-`log_every`) — independent of model and recipe.
+Recipe knobs (`epochs`, `lr`, `weight_decay`, `label_smoothing`,
+`warmup_epochs`, `grad_clip`, `ema_decay`) are plain kwargs on
+`train_one_run` with the project defaults baked in as parameter
+defaults — no `TrainRecipe`/`TrainDefaults` dataclass and no
+`dataclasses.replace` plumbing. `train.main()` parses `--epochs` (its
+default pulled from the function signature via `inspect` so there's
+a single source of truth) and passes overrides through as kwargs.
+Preprocess sizes (`input_size`, `resize_size`) are constants —
+`constants.INPUT_SIZE` / `constants.RESIZE_SIZE`. `batch_size` is
+**not** a recipe knob — it's a hardware decision and lives only on
+the CLI. `RunConfig` carries the process/IO knobs (`device`,
+`num_workers`, `prefetch_factor`, `seed`, `log_every`) — independent
+of recipe.
 
-Shared values across both shipped backbones:
+Project defaults:
 - BF16 autocast, AdamW (β=0.9/0.999), weight_decay 0.05
 - LR 1e-3, cosine schedule with 5-epoch linear warmup
 - Label smoothing 0.1 - handles the ~1% wrong-orientation images in ImageNet
@@ -121,11 +119,11 @@ Shared values across both shipped backbones:
   `config.py` so a spec can be pinned to fixed constants when wanted.
   `build_train_dataset` / `build_val_dataset` (in `datasets.py`) take
   `input_size`/`resize_size`/`num_workers`/`device` and thread them
-  into `get_stats`, then `ConcatDataset` the per-spec parts. The sizes
-  are sourced from the chosen Backbone's `train_defaults` - they used
-  to be globals in `config.py` and were moved when EfficientNet-B0
-  landed (different timm archs want different native sizes; B1=240,
-  B2=256, etc.).
+  into `get_stats`, then `ConcatDataset` the per-spec parts. Callers
+  pass `constants.INPUT_SIZE` / `constants.RESIZE_SIZE` — they used
+  to live in `config.py`, then briefly on the Backbone class while
+  the project had multiple archs, and landed in `constants.py` when
+  the Backbone abstraction was removed.
 - **Stats computation** is device-accelerated: images are decoded via
   the shared `build_eval_preprocess()` pipeline (Resize → CenterCrop →
   ToTensor, no Normalize — we're computing the normaliser), workers
@@ -191,15 +189,15 @@ ML-domain code lives at `src/` root; general-purpose helpers live under
 
 ```
 config.py         IMAGENET_MEAN/STD, DATASETS (instances),
-                  DEFAULT_BACKBONE (Backbone instance - the single
-                  source of truth for the chosen arch),
                   STATS_SAMPLE_FRACTION/SEED. No DEVICE — every CLI
-                  takes --device explicitly.
+                  takes --device explicitly. No DEFAULT_BACKBONE — the
+                  arch is fixed and lives inside RotationModel.
 constants.py      ROTATIONS, NUM_CLASSES, PROJECT_ROOT, CHECKPOINT_DIR,
-                  INDEX_CACHE_DIR, LOGS_DIR, LOG_STEP — domain constants
-                  and static paths depended on by datasets/model/train/
-                  infer/utils without going through config. No hardware
-                  knobs (NUM_WORKERS/PREFETCH_FACTOR) live here.
+                  INDEX_CACHE_DIR, LOGS_DIR, LOG_STEP, INPUT_SIZE,
+                  RESIZE_SIZE — domain constants and static paths
+                  depended on by datasets/model/train/infer/utils
+                  without going through config. No hardware knobs
+                  (NUM_WORKERS/PREFETCH_FACTOR) live here.
 datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None),
                   ImageLoader (PIL by index), RotationPairDataset (4× wrapper),
                   build_train_dataset / build_val_dataset (take input_size,
@@ -222,33 +220,24 @@ builders.py       build_train_transform, build_eval_preprocess (Resize →
                   no longer read globals from config. No project-local
                   deps; transforms only.
 models/
-  __init__.py     re-exports RotationModel, Backbone, TrainDefaults
-  base.py         Backbone (ABC: name, train_defaults ClassVars + abstract
-                  build) and TrainDefaults (frozen dataclass: full recipe
-                  including input_size/resize_size). Their own module so
-                  backbone files can import them without cycling through
-                  __init__.py.
-  rotation.py     RotationModel - takes a Backbone instance, builds the
-                  backbone via backbone.build(...) and stacks the
-                  shared head on top.
-  backbones/
-    __init__.py   re-exports each subclass
-    convnextv2_tiny.py / efficientnet_b0.py
-                  one Backbone subclass per arch; each declares its
-                  name, train_defaults, and a build method that calls
-                  timm.create_model and returns (module, feat_dim).
-                  Add a new arch by dropping a sibling module and
-                  re-exporting it from backbones/__init__.py.
+  __init__.py     re-exports RotationModel, ModelEMA
+  rotation.py     RotationModel - builds efficientnet_b0 via timm
+                  (global_pool="avg", num_classes=0) and stacks the
+                  4-class head on top. No Backbone indirection.
+  ema.py          ModelEMA - shadow-weight wrapper updated via
+                  bias-corrected ramp.
 infer.py          Prediction dataclass (rotation, confidence categorical,
                   confidence_pct continuous, votes, entropy) +
                   predict_image (takes input_size/resize_size from the
                   caller, runs 4-rotation consistency + posterior averaging)
-train.py          ModelEMA (inlined - only used here), RunConfig (device,
-                  num_workers, prefetch_factor, seed, log_every),
-                  save_checkpoint, cosine_with_warmup, set_lr,
-                  train_one_run (takes backbone, recipe, run, batch_size —
-                  no TrainConfig wrapper), main. No validation here;
-                  see validator.py.
+train.py          RunConfig (device, num_workers, prefetch_factor,
+                  seed, log_every), save_checkpoint,
+                  cosine_with_warmup, set_lr, train_one_run (run,
+                  batch_size, + optimisation kwargs with defaults
+                  baked in), main. main pulls the --epochs argparse
+                  default from train_one_run's signature via inspect
+                  so there's a single source of truth. No validation
+                  here; see validator.py.
 validator.py      Standalone checkpoint validator CLI. run_validation
                   (fp32, no autocast) + validate_checkpoint loader.
                   Required flags: --checkpoint, --device, --batch-size,
@@ -271,11 +260,11 @@ utils/
 
 **Dependency direction**: `utils.* + constants → builders →
 {models.*, datasets, stats} → config → {train, infer, smoke_test}`.
-config imports `models.backbones` so `DEFAULT_BACKBONE` can be an
-actual instance. builders has no project-local deps beyond torchvision,
-which lets stats import `build_eval_preprocess` and datasets import
-the rest of the transforms without recreating the old builders↔stats
-cycle. No cycles.
+config no longer imports anything from `models` (the Backbone
+instance is gone). builders has no project-local deps beyond
+torchvision, which lets stats import `build_eval_preprocess` and
+datasets import the rest of the transforms without recreating the
+old builders↔stats cycle. No cycles.
 
 **Import style**: `src/` is on `sys.path` when a CLI is run from project
 root (`venv/bin/python src/<file>.py`), so absolute imports work - e.g.
@@ -306,15 +295,15 @@ are **required** on every CLI that builds a DataLoader. There are no
 hardware defaults baked into the library — pick values for the
 machine the command is running on.
 
-`train.py`'s recipe defaults (epochs etc.) come from
-`config.DEFAULT_BACKBONE.train_defaults` and show up in `--help` with
-the chosen backbone's values. To switch arch, edit the import +
-instantiation in `config.py`; there is no `--backbone` CLI flag.
+`train.py`'s recipe defaults are kwargs on `train_one_run`; the
+`--epochs` argparse default is read from that signature via
+`inspect`, so the value lives in exactly one place. There is no
+`--backbone` flag — the arch is fixed.
 
 `stats.py` runs `get_stats` over every entry in `config.DATASETS` at
-the configured backbone's preprocess sizes and prints/caches the
-result. Useful for pre-computing stats before a training run so the
-first epoch isn't waiting on the scan. Pass `--input-size`/
+`constants.INPUT_SIZE` / `constants.RESIZE_SIZE` and prints/caches
+the result. Useful for pre-computing stats before a training run so
+the first epoch isn't waiting on the scan. Pass `--input-size`/
 `--resize-size` to compute stats at a different size - they'll land
 in a separately keyed cache file.
 
@@ -342,12 +331,11 @@ Strict rules - apply without asking:
 10. **No extension whitelists** when scanning files unless we have a concrete
     reason - let PIL fail at decode time.
 11. **Cross-cutting static state lives in `config.py`** (DATASETS,
-    DEFAULT_BACKBONE, stats sampling fraction/seed) or `constants.py`
-    (paths, ROTATIONS, LOG_STEP). **Hardware/runtime knobs (device,
-    num_workers, prefetch_factor, batch_size) do NOT live in either —
-    they come from the CLI on every entry point** so the library
-    stays machine-agnostic. Arch-coupled knobs (input_size,
-    resize_size, etc.) belong on the Backbone class.
+    stats sampling fraction/seed) or `constants.py` (paths,
+    ROTATIONS, LOG_STEP, INPUT_SIZE, RESIZE_SIZE). **Hardware/runtime
+    knobs (device, num_workers, prefetch_factor, batch_size) do NOT
+    live in either — they come from the CLI on every entry point** so
+    the library stays machine-agnostic.
 12. **`help=` on every argparse argument.**
 13. **Use `model.train(False)`** for inference mode (the security hook flags
     the other spelling).
@@ -367,8 +355,10 @@ Strict rules - apply without asking:
   `train.py` calls `save_checkpoint`, it lives in `train.py`. Earlier I
   extracted `checkpoint.py`, `evaluate.py`, `schedule.py` and was told to
   put them back. They're now inlined.
-- `ModelEMA` lives in `train.py` - it's only used there. Earlier it was
-  in its own `ema.py`; inlined when the splitting rules caught it.
+- `ModelEMA` lives in `models/ema.py`. It's used by `train.py` only,
+  but the module is non-trivial (deepcopy plumbing + bias-corrected
+  update + load/save). Inlining it once made `train.py` noisier than
+  it gained.
 - `DatasetSpec` lives in `datasets.py` alongside the dataset classes that
   consume it - it used to be in `spec.py` but the standalone file was
   one line of dataclass with no other purpose.
@@ -384,45 +374,43 @@ Strict rules - apply without asking:
 - Transforms (`build_train_transform`, `build_eval_preprocess`,
   `build_eval_transform`) live in `builders.py`. Earlier they were in
   `config.py`; that was wrong - they're functions, not configuration.
-- Each backbone is a `Backbone` subclass in its own file under
-  `models/backbones/`. Earlier iterations tried a `BACKBONES = {name:
-  module}` registry, then a `BACKBONES = {name: Backbone}` lookup
-  table - both got called out. The current shape: the class IS the
-  abstraction, `config.DEFAULT_BACKBONE` holds the instance directly,
-  no string-keyed indirection.
-- `TrainDefaults` (per-backbone recipe defaults) lives in
-  `models/base.py`. `TrainConfig` does NOT exist - earlier it was a
-  `TrainConfig(TrainDefaults)` wrapper that bundled the backbone with
-  the recipe; it was redundant. The current shape: `train_one_run`
-  takes `(backbone, recipe, run)` directly, and main builds the
-  recipe with `dataclasses.replace(backbone.train_defaults, ...)`.
+- The arch lives inline in `RotationModel`. Earlier there was a
+  `Backbone` ABC under `models/backbones/` with `EfficientNetB0` and
+  `ConvNeXtV2Tiny` subclasses, a `TrainDefaults` ClassVar carrying
+  recipe knobs, and `config.DEFAULT_BACKBONE` pointing at the chosen
+  instance. The whole tower came down when ConvNeXt was dropped:
+  with one arch, the indirection was just noise. If a second arch
+  ever lands, prefer adding it inline (e.g. an `arch` arg on
+  `RotationModel`) before reintroducing an ABC.
+- Recipe knobs are kwargs on `train_one_run`, not a dataclass.
+  Earlier shapes that got walked back: `TrainConfig(TrainDefaults)`
+  bundling backbone+recipe, then a standalone `TrainRecipe` frozen
+  dataclass + `dataclasses.replace` for CLI overrides. The current
+  shape is plain kwargs with defaults baked in; the CLI reads its
+  `--epochs` default from the signature via `inspect`.
 - `RunConfig` (process/IO/seed/logging knobs) is separate from
-  recipe knobs by intent - same recipe, different machine.
+  recipe kwargs by intent - same recipe, different machine.
 
 ### Anti-patterns the user called out
 
 - Calling `git add -A` and accidentally committing fixtures/examples.
 - Re-authoring history with overrides when `git config user.*` is already
   correct - just commit.
-- Factory functions like `build_model()` when the class constructor is already
-  fine: `RotationModel(backbone=EfficientNetB0())`.
+- Factory functions like `build_model()` when the class constructor
+  is already fine: `RotationModel(pretrained=False)`.
 - Keeping unused dead helpers around "just in case" (`predict_path`,
   `load_model_for_inference`, `build_model`, the temperature
   buffer/calibrated_logits/calibrate.py - all removed).
-- String-keyed registries (`BACKBONES = {"efficientnet_b0":
-  EfficientNetB0()}`) when there's no string source of truth driving
-  the lookup. If the only caller is `config.DEFAULT_BACKBONE = "..."`,
-  just make `DEFAULT_BACKBONE` the instance.
-- Looking up a known-at-edit-time class through a registry -
-  `models.BACKBONES["efficientnet_b0"]` in smoke_test where
-  `EfficientNetB0()` reads identically. The registry pattern is only
-  worth it when the name arrives as data.
-- Two-pass argparse tricks to display backbone-specific defaults in
-  `--help` based on a `--backbone` flag. If the backbone is fixed in
-  `config.py`, the defaults derive from it in one pass with no flag.
-- Wrapper dataclasses that just bundle two things -
-  `TrainConfig(TrainDefaults)` adding `backbone: Backbone`. Pass them
-  separately and use `dataclasses.replace` for overrides.
+- ABCs / registries / wrapper dataclasses introduced "for
+  swappability" before the second instance actually exists. The
+  `Backbone` ABC, the `BACKBONES = {name: ...}` registry attempts,
+  the `TrainConfig(TrainDefaults)` wrapper, and the `TrainRecipe`
+  dataclass were all paid in indirection without a second concrete
+  use case. Wait for the second case to land before abstracting.
+- Duplicating defaults between an argparse `default=` and the
+  function it calls. If `train_one_run` has `epochs: int = 100`, the
+  CLI default reads from `inspect.signature(...)` rather than
+  repeating the number.
 
 ## Communication style
 
@@ -466,17 +454,17 @@ Strict rules - apply without asking:
   needs values in [0,1] not zero-centred, and RandomErasing's default
   fill of 0 means "dataset mean" *after* Normalize (a grey patch instead
   of pure black). Don't reorder.
-- Both shipped backbones end in `AdaptiveAvgPool`, so `input_size` is
-  a per-arch *default* (declared in the Backbone's `train_defaults`),
-  not an architectural requirement. 224 is the convention; from-scratch
-  training can pick 192/256/288 - bigger trades compute for more
-  orientation cues. `resize_size` is just slightly larger than
-  `input_size` so `RandomCrop` has wiggle room (~1.03–1.14× ratio).
-  Different timm archs would want different native sizes (EfficientNet-
-  B1=240, B2=256) - that's why these moved out of `config.py`.
+- EfficientNet-B0 ends in `AdaptiveAvgPool`, so `INPUT_SIZE` is a
+  convention (224), not an architectural requirement. From-scratch
+  training can pick 192/256/288 — bigger trades compute for more
+  orientation cues. `RESIZE_SIZE` is just slightly larger so
+  `RandomCrop` has wiggle room (~1.03× ratio at 232/224). Both live
+  in `constants.py` now; they used to be on the Backbone class while
+  the project had multiple archs (different timm archs want
+  different native sizes — B1=240, B2=256).
 - Stats are cached per `(dataset, resize_size, input_size)` triple in
-  the filename. If you change `input_size`/`resize_size` on a backbone,
-  the existing cache silently won't match and stats recompute - that's
+  the filename. If you change `INPUT_SIZE`/`RESIZE_SIZE`, the
+  existing cache silently won't match and stats recompute - that's
   the intended behavior, not a bug.
 - `stats.py` needs `tqdm`. It's not in the project's torch family deps so
   add it explicitly to requirements if a fresh venv is being set up.
@@ -495,8 +483,9 @@ Strict rules - apply without asking:
 - `tqdm` is a new dep introduced by `stats.py`. Add to requirements if
   setting up a fresh venv.
 - No checkpoint exists yet. First real run goes through `train.py`
-  end-to-end. Default backbone is `EfficientNetB0` (switched from
-  `ConvNeXtV2Tiny` for a ~10× compute reduction).
+  end-to-end. The arch is EfficientNet-B0 (the project briefly
+  shipped a swappable Backbone ABC with ConvNeXt-V2-Tiny as a second
+  option; both were removed once B0 was settled).
 - Datasets live on SSD at `/media/poweruser/data/2-stuff/datasets/`.
   Earlier they were on an HDD at `/mnt/archive/...` and the loop was
   I/O-bound; the move was made to let compute be the actual ceiling.
