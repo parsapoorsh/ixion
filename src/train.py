@@ -107,10 +107,11 @@ def build_train_loader(run: RunConfig) -> DataLoader:
 def train_one_run(
     run: RunConfig,
     epochs: int = 100,
-    lr: float = 1e-3,
-    weight_decay: float = 0.05,
+    lr: float = 0.1,
+    momentum: float = 0.9,
+    weight_decay: float = 1e-4,
     label_smoothing: float = 0.1,
-    warmup_epochs: int = 5,
+    warmup_epochs: int = 10,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
     resume_from: Path | None = None,
@@ -121,11 +122,12 @@ def train_one_run(
     model = RotationModel(pretrained=False).to(run.device)
     ema = ModelEMA(model, decay=ema_decay)
 
-    optimizer = torch.optim.AdamW(
+    optimizer = torch.optim.SGD(
         model.parameters(),
         lr=lr,
-        betas=(0.9, 0.999),
+        momentum=momentum,
         weight_decay=weight_decay,
+        nesterov=True,
     )
     loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
