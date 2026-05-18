@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import matplotlib.cm as cm
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+from matplotlib.figure import Figure
 from PIL import Image
 from torchvision import transforms as T
 
@@ -33,6 +35,8 @@ from utils.image_io import open_rgb
 LABELS = ["0°", "90°", "180°", "270°"]
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+
+gpu_lock = threading.Lock()
 
 
 def load_cached_stats(cache_dir: Path) -> tuple[tuple, tuple]:
@@ -119,18 +123,23 @@ def visualise(
         T.CenterCrop(constants.INPUT_SIZE),
     ])(pil_img)
 
-    with torch.no_grad():
-        tensor = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
-        probs = model(tensor).softmax(dim=1)[0]
-    pred = probs.argmax().item()
+    with gpu_lock:
+        with torch.no_grad():
+            tensor = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
+            probs = model(tensor).softmax(dim=1)[0].cpu().numpy()
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+        cams: list[np.ndarray] = []
+        for cls_idx in range(constants.NUM_CLASSES):
+            t = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
+            cams.append(compute_gradcam(model, t, cls_idx))
 
-    for cls_idx in range(constants.NUM_CLASSES):
-        t = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
-        cam = compute_gradcam(model, t, cls_idx)
+    pred = int(probs.argmax())
+
+    fig = Figure(figsize=(10, 10))
+    axes = fig.subplots(2, 2)
+
+    for cls_idx, cam in enumerate(cams):
         img_overlay = make_overlay(display, cam)
-
         ax = axes[cls_idx // 2, cls_idx % 2]
         marker = " *" if cls_idx == pred else ""
         ax.imshow(img_overlay)
@@ -140,7 +149,6 @@ def visualise(
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
     print(f"saved: {out_path}")
 
 
@@ -150,6 +158,13 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:1")
     parser.add_argument("--images", type=Path, nargs="+", required=True)
     parser.add_argument("--out-dir", type=Path, default=Path("gradcam_out"))
+    parser.add_argument(
+        "-t",
+        "--thread",
+        type=int,
+        default=1,
+        help="worker threads (GPU work is serialised; threads help I/O and overlay)",
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -168,10 +183,17 @@ def main() -> None:
 
     args.out_dir.mkdir(exist_ok=True)
 
-    for img_path in args.images:
+    def run_one(img_path: Path) -> None:
         pil = open_rgb(img_path)
         out_path = args.out_dir / f"{img_path.stem}_gradcam.png"
         visualise(model, pil, preprocess, device, img_path.name, out_path)
+
+    if args.thread > 1:
+        with ThreadPoolExecutor(max_workers=args.thread) as pool:
+            list(pool.map(run_one, args.images))
+    else:
+        for img_path in args.images:
+            run_one(img_path)
 
 
 if __name__ == "__main__":
