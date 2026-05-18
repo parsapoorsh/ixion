@@ -149,7 +149,6 @@ def visualise(
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    print(f"saved: {out_path}")
 
 
 def main() -> None:
@@ -166,13 +165,13 @@ def main() -> None:
         help="worker threads (GPU work is serialised; threads help I/O and overlay)",
     )
     args = parser.parse_args()
+    args.images = [p for p in args.images if p.is_file()]
 
     device = torch.device(args.device)
     model = load_model(args.checkpoint, device)
 
     project_root = Path(__file__).parent.parent
     mean, std = load_cached_stats(project_root / "cache")
-    print(f"normalisation  mean={mean}  std={std}")
 
     preprocess = T.Compose([
         T.Resize(constants.RESIZE_SIZE),
