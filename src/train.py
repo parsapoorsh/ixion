@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 class RunConfig:
     """Process / IO / reproducibility - independent of recipe."""
     device: torch.device
+    batch_size: int
     num_workers: int
     prefetch_factor: int
     seed: int
@@ -73,10 +74,7 @@ def cosine_with_warmup(
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
-def build_train_loader(
-    run: RunConfig,
-    batch_size: int,
-) -> DataLoader:
+def build_train_loader(run: RunConfig) -> DataLoader:
     logger.info("building train dataset...")
     train_ds = build_train_dataset(
         config.DATASETS,
@@ -88,7 +86,7 @@ def build_train_loader(
     logger.info("train pairs: %d", len(train_ds))
     return DataLoader(
         train_ds,
-        batch_size=batch_size,
+        batch_size=run.batch_size,
         shuffle=True,
         num_workers=run.num_workers,
         pin_memory=run.device.type == "cuda",
@@ -100,7 +98,6 @@ def build_train_loader(
 
 def train_one_run(
     run: RunConfig,
-    batch_size: int,
     epochs: int = 100,
     lr: float = 1e-3,
     weight_decay: float = 0.05,
@@ -111,7 +108,7 @@ def train_one_run(
     resume_from: Path | None = None,
 ) -> None:
     torch.manual_seed(run.seed)
-    train_loader = build_train_loader(run, batch_size)
+    train_loader = build_train_loader(run)
 
     model = RotationModel(pretrained=False).to(run.device)
     ema = ModelEMA(model, decay=ema_decay)
@@ -274,15 +271,12 @@ def main() -> None:
 
     run = RunConfig(
         device=torch.device(args.device),
+        batch_size=args.batch_size,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         seed=args.seed,
     )
-    train_one_run(
-        run,
-        batch_size=args.batch_size,
-        resume_from=args.resume,
-    )
+    train_one_run(run, resume_from=args.resume)
 
 
 if __name__ == "__main__":
