@@ -12,7 +12,6 @@ knobs. Validation is a separate process - see ``validator.py``.
 from __future__ import annotations
 
 import argparse
-import inspect
 import logging
 import math
 import sys
@@ -221,7 +220,6 @@ def train_one_run(
 
 def main() -> None:
     setup_logging()
-    default_epochs = inspect.signature(train_one_run).parameters["epochs"].default
 
     p = argparse.ArgumentParser(
         description="Train the rotation detector.",
@@ -250,12 +248,6 @@ def main() -> None:
         type=int,
         required=True,
         help="batches each worker keeps queued ahead of the consumer",
-    )
-    p.add_argument(
-        "--epochs",
-        type=int,
-        default=default_epochs,
-        help="number of full passes over the (4x-rotated) training set",
     )
     p.add_argument(
         "--seed",
@@ -289,7 +281,6 @@ def main() -> None:
     train_one_run(
         run,
         batch_size=args.batch_size,
-        epochs=args.epochs,
         resume_from=args.resume,
     )
 
