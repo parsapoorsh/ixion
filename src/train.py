@@ -43,7 +43,7 @@ class RunConfig:
     device: torch.device
     num_workers: int
     prefetch_factor: int
-    seed: int = 42
+    seed: int
     log_every: int = 50
 
 
@@ -259,7 +259,7 @@ def main() -> None:
     p.add_argument(
         "--seed",
         type=int,
-        default=42,
+        required=True,
         help="torch RNG seed for the training loop",
     )
     p.add_argument(
