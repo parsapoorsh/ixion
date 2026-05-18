@@ -166,6 +166,7 @@ cython_debug/
 cache/
 checkpoints/
 logs/
+examples/
 
 # model checkpoints
 *.onnx
