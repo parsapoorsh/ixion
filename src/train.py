@@ -117,9 +117,11 @@ def train_one_run(
     resume_from: Path | None = None,
 ) -> None:
     torch.manual_seed(run.seed)
+    torch.backends.cudnn.benchmark = True
     train_loader = build_train_loader(run)
 
     model = RotationModel(pretrained=False).to(run.device)
+    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
     ema = ModelEMA(model, decay=ema_decay)
 
     optimizer = torch.optim.SGD(
@@ -173,7 +175,11 @@ def train_one_run(
             file=sys.stdout,
         )
         for imgs, labels in pbar:
-            imgs = imgs.to(run.device, non_blocking=True)
+            imgs = imgs.to(
+                run.device,
+                non_blocking=True,
+                memory_format=torch.channels_last,
+            )
             labels = labels.to(run.device, non_blocking=True)
 
             scale = cosine_with_warmup(
