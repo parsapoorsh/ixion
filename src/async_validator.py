@@ -21,6 +21,7 @@ once per epoch, so the throughput cost of fp32 is fine.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import multiprocessing as mp
@@ -29,6 +30,7 @@ import threading
 import time
 from dataclasses import dataclass
 from logging.handlers import QueueHandler
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -45,10 +47,10 @@ from datasets import build_val_dataset
 from models import RotationModel
 from utils.image_io import open_rgb
 from utils.index import index_files
+from utils.logsetup import setup_logging
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path  # noqa: F401  # used in type annotations elsewhere
 
     from datasets import DatasetSpec
     from models import Backbone, TrainDefaults
@@ -500,3 +502,87 @@ class AsyncValidator:
             self.process.join(timeout=5.0)
         self.log_q.put(None)
         self.log_listener.join(timeout=5.0)
+
+
+def validate_checkpoint(
+    checkpoint_path: Path,
+    device_index: int,
+) -> None:
+    """Load a saved checkpoint's EMA weights and run validation in-process.
+    Standalone sanity-check — does NOT spawn the async child.
+    """
+    backbone = config.DEFAULT_BACKBONE
+    recipe = backbone.train_defaults
+
+    torch.cuda.set_device(device_index)
+    device = torch.device(f"cuda:{device_index}")
+
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    logger.info(
+        "loaded %s (epoch=%s, ema_step=%s)",
+        checkpoint_path,
+        payload.get("epoch"),
+        payload.get("ema_step"),
+    )
+
+    model = RotationModel(
+        backbone=backbone,
+        pretrained=False,
+    ).to(device)
+    model.load_state_dict(payload["ema"])
+
+    val_ds = build_val_dataset(
+        config.DATASETS,
+        input_size=recipe.input_size,
+        resize_size=recipe.resize_size,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=VALIDATION_BATCH_SIZE,
+        shuffle=False,
+        num_workers=VALIDATOR_WORKERS,
+        pin_memory=True,
+        persistent_workers=False,
+        prefetch_factor=constants.PREFETCH_FACTOR,
+    )
+    logger.info("val pairs: %d", len(val_ds))
+
+    t0 = time.monotonic()
+    loss, acc, per_class = run_validation(
+        model,
+        val_loader,
+        device=device,
+    )
+    dt = time.monotonic() - t0
+    logger.info(
+        "checkpoint %s -> loss=%.4f acc=%.4f per_class=%s in %.0fs",
+        checkpoint_path.name, loss, acc, per_class, dt,
+    )
+
+
+def main() -> None:
+    setup_logging()
+    parser = argparse.ArgumentParser(
+        description="Validate a single checkpoint in-process (sanity-check).",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        required=True,
+        help="path to an epoch_NNN.pt checkpoint to validate",
+    )
+    parser.add_argument(
+        "--device-index",
+        type=int,
+        default=1,
+        help="CUDA device index to run validation on (default: 1, the 1660 SUPER)",
+    )
+    args = parser.parse_args()
+    validate_checkpoint(
+        checkpoint_path=args.checkpoint,
+        device_index=args.device_index,
+    )
+
+
+if __name__ == "__main__":
+    main()
