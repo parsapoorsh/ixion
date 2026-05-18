@@ -15,12 +15,8 @@ from models.base import Backbone, TrainDefaults
 
 class ConvNeXtV2Tiny(Backbone):
     name: ClassVar[str] = "convnextv2_tiny"
-    # batch_size is the hard arch-coupled knob — sized for the BF16
-    # activation footprint on a 16GB card shared with the desktop
-    # compositor; 128 OOMs in practice.
     train_defaults: ClassVar[TrainDefaults] = TrainDefaults(
         epochs=100,
-        batch_size=64,
         lr=1e-3,
         weight_decay=0.05,
         label_smoothing=0.1,

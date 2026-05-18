@@ -15,12 +15,8 @@ from models.base import Backbone, TrainDefaults
 
 class EfficientNetB0(Backbone):
     name: ClassVar[str] = "efficientnet_b0"
-    # ~7× smaller activations than ConvNeXt-V2-Tiny → much larger
-    # batch fits the same card. Other recipe knobs are conservative
-    # shared defaults; tune once a real run shows what wants to move.
     train_defaults: ClassVar[TrainDefaults] = TrainDefaults(
         epochs=100,
-        batch_size=288,
         lr=1e-3,
         weight_decay=0.05,
         label_smoothing=0.1,

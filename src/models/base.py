@@ -23,7 +23,6 @@ class TrainDefaults:
     recipe knob is a one-place change.
     """
     epochs: int
-    batch_size: int
     lr: float
     weight_decay: float
     label_smoothing: float
