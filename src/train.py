@@ -55,7 +55,11 @@ def save_checkpoint(
     ema: ModelEMA,
     extras: dict | None = None,
 ) -> None:
-    payload: dict = {"model": model.state_dict(), "ema": ema.state_dict()}
+    payload: dict = {
+        "model": model.state_dict(),
+        "ema": ema.state_dict(),
+        "ema_step": ema.step,
+    }
     if extras:
         payload.update(extras)
     path.parent.mkdir(parents=True, exist_ok=True)
