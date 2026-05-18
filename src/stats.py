@@ -86,7 +86,7 @@ def get_stats(
             std=tuple(payload["std"]),
         )
 
-    files = index_files(f"train_{spec.name}", [spec.train])
+    files = index_files(f"train_{spec.name}", spec.train)
     target_n = max(1, int(len(files) * config.STATS_SAMPLE_FRACTION))
     sample = sample_files(files, target_n, config.STATS_SAMPLE_SEED)
     logger.info(
@@ -96,7 +96,7 @@ def get_stats(
     )
 
     t0 = time.monotonic()
-    stats = compute_stats(
+    result = compute_stats(
         sample,
         input_size=input_size,
         resize_size=resize_size,
@@ -106,15 +106,15 @@ def get_stats(
     dt = time.monotonic() - t0
     logger.info(
         "%s stats: mean=%s std=%s (%.1fs, %.1f img/s)",
-        spec.name, stats.mean, stats.std, dt, len(sample) / dt,
+        spec.name, result.mean, result.std, dt, len(sample) / dt,
     )
 
     with cache.open("w") as f:
         json.dump(
-            {"mean": list(stats.mean), "std": list(stats.std), "n_sampled": len(sample)},
+            {"mean": list(result.mean), "std": list(result.std), "n_sampled": len(sample)},
             f,
         )
-    return stats
+    return result
 
 
 def sample_files(
