@@ -1,19 +1,24 @@
 """Wiring sanity check on the example images.
 
 Builds the model with random init (no training), runs a synthetic
-forward/backward through the training transforms, and runs the 4-rotation
-consistency inference on the examples/ directory. Catches import errors,
-shape bugs, JXL/PIL/transform issues, and obvious model-side problems before
-launching a real training run.
+forward/backward through the training transforms, runs the 4-rotation
+consistency inference on the examples/ directory, and exercises the
+validator + ambiguity-scan code paths in-process against the same
+examples folder. Catches import errors, shape bugs, JXL/PIL/transform
+issues, and obvious model-side problems before launching a real
+training run.
 """
 
 import logging
 
 import torch
+from torch.utils.data import DataLoader
 
 import config
 import constants
-from builders import build_train_transform
+from async_validator import run_validation, scan_dataset
+from builders import build_eval_transform, build_train_transform
+from datasets import DatasetSpec, ImageLoader, RotationPairDataset
 from utils.image_io import open_rgb
 from infer import predict_image
 from utils.logsetup import setup_logging
@@ -90,6 +95,52 @@ def main() -> None:
             p.name, pred.rotation, pred.confidence, pred.confidence_pct,
             pred.votes, pred.entropy,
         )
+
+    smoke_spec = DatasetSpec(
+        name="smoke_examples",
+        train=eg_dir,
+        val=eg_dir,
+        mean=channel_stats.mean,
+        std=channel_stats.std,
+    )
+    eval_tf = build_eval_transform(
+        mean=channel_stats.mean,
+        std=channel_stats.std,
+        input_size=defaults.input_size,
+        resize_size=defaults.resize_size,
+    )
+    val_ds = RotationPairDataset(ImageLoader(sample_files), eval_tf)
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=min(constants.NUM_CLASSES * 2, len(val_ds)),
+        shuffle=False,
+        num_workers=0,
+    )
+    logger.info("validator: run_validation on %d examples (x4)", len(sample_files))
+    val_loss, val_acc, per_class = run_validation(
+        model,
+        val_loader,
+        device=config.DEVICE,
+        autocast_dtype=torch.bfloat16,
+    )
+    logger.info(
+        "validator ok. loss=%.3f acc=%.3f per_class=%s",
+        val_loss, val_acc, per_class,
+    )
+
+    logger.info("ambiguity scan over examples/ ...")
+    paths, n_weak, n_ambiguous = scan_dataset(
+        model,
+        dataset_specs=[smoke_spec],
+        device=config.DEVICE,
+        batch_size=min(8, len(sample_files)),
+        recipe_input_size=defaults.input_size,
+        recipe_resize_size=defaults.resize_size,
+    )
+    logger.info(
+        "ambiguity scan ok. kept=%d weak=%d ambiguous=%d",
+        len(paths), n_weak, n_ambiguous,
+    )
 
 
 if __name__ == "__main__":
