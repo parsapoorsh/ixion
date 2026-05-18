@@ -19,3 +19,9 @@ INDEX_CACHE_DIR = PROJECT_ROOT / "cache"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
 LOG_STEP = 50
+
+# Preprocess sizes for the EfficientNet-B0 rotation model.
+# resize_size is ~1.03x input_size so RandomCrop has wiggle room.
+INPUT_SIZE = 224
+RESIZE_SIZE = 232
+
