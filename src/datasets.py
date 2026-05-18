@@ -111,7 +111,7 @@ class RotationPairDataset(Dataset):
             raise RuntimeError("no readable images remain in the dataset")
         tensor = self.transform(img)
         if rot_idx != 0:
-            tensor = TF.rotate(tensor, constants.ROTATIONS[rot_idx])
+            tensor = TF.rotate(tensor, constants.ROTATIONS[rot_idx], expand=True)
         return tensor, rot_idx
 
 

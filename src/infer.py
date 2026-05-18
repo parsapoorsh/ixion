@@ -62,7 +62,7 @@ def predict_image(
         resize_size=resize_size,
     )
     views = torch.stack([
-        transform(TF.rotate(img, r, expand=False))
+        transform(TF.rotate(img, r, expand=True))
         for r in constants.ROTATIONS
     ])
     views = views.to(device, non_blocking=True)
