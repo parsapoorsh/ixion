@@ -117,6 +117,7 @@ def train_one_run(
     warmup_epochs: int = 10,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
+    equiv_weight: float = 0.5,
     resume_from: Path | None = None,
 ) -> None:
     torch.manual_seed(run.seed)
@@ -203,7 +204,21 @@ def train_one_run(
 
             with torch.autocast(device_type=run.device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
                 logits = model(imgs)
-                loss = loss_fn(logits, labels)
+                ce_loss = loss_fn(logits, labels)
+                loss = ce_loss
+                if equiv_weight > 0:
+                    # Enforce f(rot(x, k*90)) == (f(x) + k) mod 4. Pairs the
+                    # same images at a different rotation in one batch so
+                    # the gradient directly penalises rotational
+                    # inconsistency, rather than relying on shuffled data
+                    # to surface that pairing implicitly.
+                    k = int(torch.randint(1, 4, (1,)).item())
+                    rot_imgs = torch.rot90(
+                        imgs, k=k, dims=[-2, -1],
+                    ).contiguous(memory_format=torch.channels_last)
+                    rot_labels = (labels + k) % 4
+                    rot_logits = model(rot_imgs)
+                    loss = ce_loss + equiv_weight * loss_fn(rot_logits, rot_labels)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -214,7 +229,7 @@ def train_one_run(
             optimizer.step()
             ema.update(model)
 
-            running_loss += loss.item() * imgs.size(0)
+            running_loss += ce_loss.item() * imgs.size(0)
             running_correct += (logits.argmax(dim=1) == labels).sum().item()
             running_seen += imgs.size(0)
             running_grad_norm += grad_norm.item()
