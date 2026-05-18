@@ -4,16 +4,15 @@ Run from the project root:
     venv/bin/python src/train.py --device cuda --batch-size N \\
         --num-workers N --prefetch-factor N
 
-``TrainRecipe`` carries the optimisation knobs; CLI flags override
-individual fields. ``RunConfig`` holds the process/IO knobs that are
-independent of the recipe. Validation is a separate process - see
-``validator.py``.
+Optimisation knobs are plain kwargs on ``train_one_run`` with the
+project's defaults baked in. ``RunConfig`` carries the process/IO
+knobs. Validation is a separate process - see ``validator.py``.
 """
 
 from __future__ import annotations
 
 import argparse
-import dataclasses
+import inspect
 import logging
 import math
 import sys
@@ -35,18 +34,6 @@ from utils.index import clear_cache
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class TrainRecipe:
-    """Optimisation knobs for the training loop."""
-    epochs: int = 100
-    lr: float = 1e-3
-    weight_decay: float = 0.05
-    label_smoothing: float = 0.1
-    warmup_epochs: int = 5
-    grad_clip: float = 1.0
-    ema_decay: float = 0.9999
 
 
 @dataclass
@@ -118,31 +105,37 @@ def build_train_loader(
 
 
 def train_one_run(
-    recipe: TrainRecipe,
     run: RunConfig,
     batch_size: int,
+    epochs: int = 100,
+    lr: float = 1e-3,
+    weight_decay: float = 0.05,
+    label_smoothing: float = 0.1,
+    warmup_epochs: int = 5,
+    grad_clip: float = 1.0,
+    ema_decay: float = 0.9999,
     resume_from: Path | None = None,
 ) -> None:
     torch.manual_seed(run.seed)
     train_loader = build_train_loader(run, batch_size)
 
     model = RotationModel(pretrained=False).to(run.device)
-    ema = ModelEMA(model, decay=recipe.ema_decay)
+    ema = ModelEMA(model, decay=ema_decay)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=recipe.lr,
+        lr=lr,
         betas=(0.9, 0.999),
-        weight_decay=recipe.weight_decay,
+        weight_decay=weight_decay,
     )
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=recipe.label_smoothing)
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     steps_per_epoch = len(train_loader)
-    total_steps = steps_per_epoch * recipe.epochs
-    warmup_steps = steps_per_epoch * recipe.warmup_epochs
+    total_steps = steps_per_epoch * epochs
+    warmup_steps = steps_per_epoch * warmup_epochs
     logger.info(
         "%d epochs x %d steps = %d total (warmup %d steps)",
-        recipe.epochs, steps_per_epoch, total_steps, warmup_steps,
+        epochs, steps_per_epoch, total_steps, warmup_steps,
     )
 
     start_epoch = 0
@@ -161,7 +154,7 @@ def train_one_run(
         )
 
     global_step = start_epoch * steps_per_epoch
-    for epoch in range(start_epoch, recipe.epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
         epoch_start = time.monotonic()
         running_loss = 0.0
@@ -180,7 +173,7 @@ def train_one_run(
             labels = labels.to(run.device, non_blocking=True)
 
             scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
-            set_lr(optimizer, recipe.lr, scale)
+            set_lr(optimizer, lr, scale)
 
             with torch.autocast(device_type=run.device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
                 logits = model(imgs)
@@ -188,7 +181,7 @@ def train_one_run(
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), recipe.grad_clip)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
             ema.update(model)
 
@@ -226,7 +219,7 @@ def train_one_run(
 
 def main() -> None:
     setup_logging()
-    defaults = TrainRecipe()
+    default_epochs = inspect.signature(train_one_run).parameters["epochs"].default
 
     p = argparse.ArgumentParser(
         description="Train the rotation detector.",
@@ -259,7 +252,7 @@ def main() -> None:
     p.add_argument(
         "--epochs",
         type=int,
-        default=defaults.epochs,
+        default=default_epochs,
         help="number of full passes over the (4x-rotated) training set",
     )
     p.add_argument(
@@ -285,11 +278,6 @@ def main() -> None:
         clear_cache()
         stats.clear_cache()
 
-    recipe = dataclasses.replace(
-        defaults,
-        epochs=args.epochs,
-    )
-    logger.info("recipe=%s", recipe)
     run = RunConfig(
         device=torch.device(args.device),
         num_workers=args.num_workers,
@@ -297,9 +285,9 @@ def main() -> None:
         seed=args.seed,
     )
     train_one_run(
-        recipe,
         run,
         batch_size=args.batch_size,
+        epochs=args.epochs,
         resume_from=args.resume,
     )
 
