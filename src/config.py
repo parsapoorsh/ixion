@@ -12,18 +12,28 @@ from datasets import DatasetSpec
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
+PATH_TO_DATASETS = Path("/media/poweruser/data/2-stuff/datasets")
+
 DATASETS = [
     DatasetSpec(
         name="imagenet",
-        train=Path("/media/poweruser/data/2-stuff/datasets/ILSVRC2017/Data/CLS-LOC/train"),
-        val=Path("/media/poweruser/data/2-stuff/datasets/ILSVRC2017/Data/CLS-LOC/val"),
+        train=[
+            PATH_TO_DATASETS / Path("ILSVRC2017/Data/CLS-LOC/train"),
+        ],
+        val=[
+            PATH_TO_DATASETS / Path("ILSVRC2017/Data/CLS-LOC/val"),
+        ],
         mean=None,
         std=None,
     ),
     DatasetSpec(
         name="coco",
-        train=Path("/media/poweruser/data/2-stuff/datasets/coco/train2017"),
-        val=Path("/media/poweruser/data/2-stuff/datasets/coco/val2017"),
+        train=[
+            PATH_TO_DATASETS / Path("coco/train2017"),
+        ],
+        val=[
+            PATH_TO_DATASETS / Path("coco/val2017"),
+        ],
         mean=None,
         std=None,
     ),

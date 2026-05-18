@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -24,7 +25,6 @@ from torchvision.transforms import functional as TF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
     from typing import Sequence
 
     from PIL import Image
@@ -47,8 +47,8 @@ class DatasetSpec:
     constants (e.g. ImageNet stats) and skip the scan.
     """
     name: str
-    train: Path
-    val: Path
+    train: list[Path]
+    val: list[Path]
     mean: tuple[float, float, float] | None = None
     std: tuple[float, float, float] | None = None
 
@@ -129,7 +129,7 @@ def build_train_dataset(
     """
     parts: list[RotationPairDataset] = []
     for spec in specs:
-        files = index_files(f"train_{spec.name}", [spec.train])
+        files = index_files(f"train_{spec.name}", spec.train)
         channel_stats = stats.get_stats(
             spec,
             input_size=input_size,
@@ -156,7 +156,7 @@ def build_val_dataset(
 ) -> ConcatDataset:
     parts: list[RotationPairDataset] = []
     for spec in specs:
-        files = index_files(f"val_{spec.name}", [spec.val])
+        files = index_files(f"val_{spec.name}", spec.val)
         channel_stats = stats.get_stats(
             spec,
             input_size=input_size,
