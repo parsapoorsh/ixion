@@ -242,6 +242,8 @@ def run_validation(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
+    autocast_dtype: torch.dtype | None = None,
+    max_batches: int | None = None,
 ) -> tuple[float, float, list[float]]:
     model.train(False)
     correct = torch.zeros(constants.NUM_CLASSES, device=device)
@@ -249,13 +251,20 @@ def run_validation(
     total_loss = 0.0
     total_n = 0
     loss_fn = nn.CrossEntropyLoss()
-    n_batches = len(loader)
+    n_batches = len(loader) if max_batches is None else min(len(loader), max_batches)
 
     for batch_idx, (imgs, labels) in enumerate(loader):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
         imgs = imgs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        logits = model(imgs)
-        loss = loss_fn(logits, labels)
+        if autocast_dtype is None:
+            logits = model(imgs)
+            loss = loss_fn(logits, labels)
+        else:
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype):
+                logits = model(imgs)
+                loss = loss_fn(logits, labels)
         preds = logits.argmax(dim=1)
         for c in range(constants.NUM_CLASSES):
             mask = labels == c
@@ -504,12 +513,28 @@ class AsyncValidator:
         self.log_listener.join(timeout=5.0)
 
 
+DTYPE_CHOICES = {
+    "fp32": None,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
+
+
 def validate_checkpoint(
     checkpoint_path: Path,
     device_index: int,
+    which_weights: str,
+    batch_size: int,
+    autocast_dtype: torch.dtype | None,
+    max_batches: int | None,
+    num_workers: int,
+    prefetch_factor: int,
 ) -> None:
-    """Load a saved checkpoint's EMA weights and run validation in-process.
-    Standalone sanity-check — does NOT spawn the async child.
+    """Load a checkpoint's weights and run validation in-process.
+
+    which_weights: "ema" or "raw" — pick which set of weights from the
+    checkpoint to load. Helpful for separating "EMA shadow is bad" from
+    "validator code is bad".
     """
     backbone = config.DEFAULT_BACKBONE
     recipe = backbone.train_defaults
@@ -519,17 +544,24 @@ def validate_checkpoint(
 
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     logger.info(
-        "loaded %s (epoch=%s, ema_step=%s)",
+        "loaded %s (epoch=%s, ema_step=%s, weights=%s)",
         checkpoint_path,
         payload.get("epoch"),
         payload.get("ema_step"),
+        which_weights,
     )
+
+    state_key = {"ema": "ema", "raw": "model"}[which_weights]
+    if state_key not in payload:
+        raise KeyError(
+            f"checkpoint missing '{state_key}' state dict; keys={list(payload)}"
+        )
 
     model = RotationModel(
         backbone=backbone,
         pretrained=False,
     ).to(device)
-    model.load_state_dict(payload["ema"])
+    model.load_state_dict(payload[state_key])
 
     val_ds = build_val_dataset(
         config.DATASETS,
@@ -538,20 +570,27 @@ def validate_checkpoint(
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=VALIDATION_BATCH_SIZE,
+        batch_size=batch_size,
         shuffle=False,
-        num_workers=VALIDATOR_WORKERS,
+        num_workers=num_workers,
         pin_memory=True,
         persistent_workers=False,
-        prefetch_factor=constants.PREFETCH_FACTOR,
+        prefetch_factor=prefetch_factor,
     )
-    logger.info("val pairs: %d", len(val_ds))
+    logger.info(
+        "val pairs: %d, batch_size=%d, workers=%d, prefetch=%d, autocast=%s, max_batches=%s",
+        len(val_ds), batch_size, num_workers, prefetch_factor,
+        autocast_dtype if autocast_dtype is not None else "off (fp32)",
+        max_batches,
+    )
 
     t0 = time.monotonic()
     loss, acc, per_class = run_validation(
         model,
         val_loader,
         device=device,
+        autocast_dtype=autocast_dtype,
+        max_batches=max_batches,
     )
     dt = time.monotonic() - t0
     logger.info(
@@ -563,7 +602,10 @@ def validate_checkpoint(
 def main() -> None:
     setup_logging()
     parser = argparse.ArgumentParser(
-        description="Validate a single checkpoint in-process (sanity-check).",
+        description=(
+            "Validate a single checkpoint in-process. "
+            "Standalone sanity-check tool — does NOT spawn the async child."
+        ),
     )
     parser.add_argument(
         "--checkpoint",
@@ -572,15 +614,57 @@ def main() -> None:
         help="path to an epoch_NNN.pt checkpoint to validate",
     )
     parser.add_argument(
+        "--weights",
+        choices=["ema", "raw"],
+        default="ema",
+        help="which weights to validate: EMA shadow (production) or raw training weights",
+    )
+    parser.add_argument(
         "--device-index",
         type=int,
         default=1,
         help="CUDA device index to run validation on (default: 1, the 1660 SUPER)",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=VALIDATION_BATCH_SIZE,
+        help="validation batch size (fp32 sized for the 1660 SUPER; bump up on cuda:0)",
+    )
+    parser.add_argument(
+        "--dtype",
+        choices=list(DTYPE_CHOICES),
+        default="fp32",
+        help="forward pass dtype: fp32 (no autocast), fp16 (Turing-overflow repro), or bf16",
+    )
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="stop after N batches (quick smoke test; default: full val set)",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=VALIDATOR_WORKERS,
+        help="DataLoader workers — bump up on cuda:0 (5060 Ti) where decode bottlenecks the GPU",
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=constants.PREFETCH_FACTOR,
+        help="batches each worker keeps queued ahead of the GPU",
+    )
     args = parser.parse_args()
     validate_checkpoint(
         checkpoint_path=args.checkpoint,
         device_index=args.device_index,
+        which_weights=args.weights,
+        batch_size=args.batch_size,
+        autocast_dtype=DTYPE_CHOICES[args.dtype],
+        max_batches=args.max_batches,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
     )
 
 
