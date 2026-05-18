@@ -2,7 +2,7 @@
 
 Loads a checkpoint, builds the val dataset from ``config.DATASETS`` at
 the configured backbone's preprocess sizes, and runs one validation
-pass. No autocast, no async machinery, no train-loop coupling — point
+pass. No autocast, no async machinery, no train-loop coupling - point
 it at any checkpoint with any device.
 """
 
@@ -82,7 +82,7 @@ def validate_checkpoint(
 ) -> None:
     """Load a checkpoint's weights and run validation in-process.
 
-    which_weights: "ema" or "raw" — pick which set of weights from the
+    which_weights: "ema" or "raw" - pick which set of weights from the
     checkpoint to load. Helpful for separating "EMA shadow is bad" from
     "validator code is bad".
     """

@@ -1,4 +1,4 @@
-"""Per-dataset channel mean/std — computed once on the chosen device, cached to disk.
+"""Per-dataset channel mean/std - computed once on the chosen device, cached to disk.
 
 When a DatasetSpec leaves mean/std as None, we sample
 ``config.STATS_SAMPLE_FRACTION`` of the train split (sorted by path for
@@ -70,7 +70,7 @@ def get_stats(
     a different preprocess gets its own cache rather than silently
     reusing stale numbers.
 
-    If the spec already carries explicit mean/std we return those directly —
+    If the spec already carries explicit mean/std we return those directly -
     the cache and the train-set scan are skipped entirely.
     """
     if spec.mean is not None and spec.std is not None:
@@ -125,7 +125,7 @@ def sample_files(
     """Deterministic uniform sample, returned in *path-sorted* order.
 
     Sorting after sampling keeps the same set of files but reads them in
-    on-disk locality order — without it, scattered seeks across a 1.2M
+    on-disk locality order - without it, scattered seeks across a 1.2M
     file tree on a spinning disk stall workers once the page cache runs
     out (~700 img/s → ~150 img/s in the wild).
     """

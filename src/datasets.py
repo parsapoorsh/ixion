@@ -4,7 +4,7 @@ concatenated train/val dataset builders.
 Image opening is delegated to image_io.open_rgb so the JXL handler and the
 truncated-image tolerance are registered in exactly one place.
 
-Each base image yields four training samples — one per rotation in
+Each base image yields four training samples - one per rotation in
 {0, 90, 180, 270}. The sample index is (image_idx, rotation_idx), so each
 epoch sees a perfectly class-balanced view of the data with full coverage of
 every rotation. Filesystem scanning lives in utils.index; transform recipes
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 class DatasetSpec:
     """A train/val pair on disk, with the normalization stats that go with it.
 
-    mean/std default to None — in that case stats.get_stats samples the
+    mean/std default to None - in that case stats.get_stats samples the
     train split and caches the result. Set them explicitly to pin to fixed
     constants (e.g. ImageNet stats) and skip the scan.
     """
@@ -60,7 +60,7 @@ class ImageLoader(Dataset):
     which applies its own transform after rotation). With a transform, returns the
     transformed tensor (used by the stats DataLoader directly).
 
-    ``files`` only needs to support ``__len__`` and ``__getitem__(idx)`` —
+    ``files`` only needs to support ``__len__`` and ``__getitem__(idx)`` -
     anything sequence-like works (a list, an ``index.PathList`` view over a
     trie, etc.). We don't require a materialised list so the caller can
     keep the index in a compact representation.

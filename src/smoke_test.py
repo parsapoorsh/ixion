@@ -8,7 +8,7 @@ Catches import errors, shape bugs, JXL/PIL/transform issues, and
 obvious model-side problems before launching a real training run.
 
 Device: auto-detected (cuda if available, else cpu). Smoke test, not a
-training entry point — no CLI needed.
+training entry point - no CLI needed.
 """
 
 import logging

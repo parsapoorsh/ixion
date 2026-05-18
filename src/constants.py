@@ -2,7 +2,7 @@
 
 These live in their own module (rather than in config.py) so dataset
 shapes and model code can depend on them without depending on the rest
-of config — keeping the import graph free of cycles when config grows
+of config - keeping the import graph free of cycles when config grows
 to import data-side types.
 """
 

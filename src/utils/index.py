@@ -7,7 +7,7 @@ the JSON is written through lzma. Shared path prefixes collapse and the
 file shrinks by roughly an order of magnitude vs. the flat list.
 
 At read time we don't materialise the full path list. ``index_files``
-returns a ``PathList`` — a sequence-like view over the trie that
+returns a ``PathList`` - a sequence-like view over the trie that
 reconstructs paths on demand. The model only ever needs ``len`` and
 ``[idx]``, which is what torch's ``Dataset`` API requires, so a real list
 is not needed and the trie can stay collapsed in memory.
@@ -44,7 +44,7 @@ def clear_cache() -> None:
 def index_files(name: str, roots: Sequence[Path]) -> "PathList":
     """Recursively list every regular file under the given roots, cached on disk.
 
-    No extension filter — the dataset directories are expected to contain only
+    No extension filter - the dataset directories are expected to contain only
     images, and PIL will raise at load time on anything it can't decode.
     """
     constants.INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -95,7 +95,7 @@ class PathList(Sequence[Path]):
     level to find the child whose subtree contains the requested index.
 
     Memory cost on top of the trie itself is one (keys-list, cums-list) pair
-    per *internal* node — orders of magnitude fewer than file count.
+    per *internal* node - orders of magnitude fewer than file count.
     """
 
     def __init__(self, trie: dict) -> None:
@@ -106,7 +106,7 @@ class PathList(Sequence[Path]):
 
     def __getstate__(self) -> dict:
         # children/cum_counts key on id(node), which is not stable across
-        # serialization — when a DataLoader spawn-worker reconstructs this,
+        # serialization - when a DataLoader spawn-worker reconstructs this,
         # the trie dicts get fresh memory addresses and the cached keys no
         # longer match. Ship only the trie and rebuild the index in the
         # recipient process.

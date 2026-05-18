@@ -2,7 +2,7 @@
 
 Tracks a shadow copy of the model's parameters and buffers, updated
 each training step with ``ema = decay * ema + (1 - decay) * param``.
-Evaluated and checkpointed separately from the raw weights — EMA
+Evaluated and checkpointed separately from the raw weights - EMA
 smooths out late-training noise and typically validates a touch
 better than the running model.
 """

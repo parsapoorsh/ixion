@@ -6,12 +6,12 @@ from datasets import DatasetSpec
 from models.backbones import EfficientNetB0
 
 
-# Architecture used by train. Single source of truth — to switch
+# Architecture used by train. Single source of truth - to switch
 # arch, swap the class here.
 DEFAULT_BACKBONE = EfficientNetB0()
 
 
-# ImageNet normalization constants — left here as a convenience for anyone
+# ImageNet normalization constants - left here as a convenience for anyone
 # who wants to pin a DatasetSpec to fixed stats instead of computing them.
 # Defaults below pass None so stats.get_stats derives mean/std from the
 # train split and caches the result.

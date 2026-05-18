@@ -9,13 +9,13 @@ content) and we abstain instead of forcing a confident wrong answer.
 Two confidence signals are returned. ``Prediction.confidence`` is the
 categorical bucket (confident/weak/ambiguous) derived from vote agreement
 and drives the abstention decision. ``Prediction.confidence_pct`` is the
-max of the rotation-equivariant posterior — for each candidate source
+max of the rotation-equivariant posterior - for each candidate source
 rotation s, average the model's probability across views (view i's
 probability for source s is ``probs[i, (s + i) % 4]``), then take the max.
 The continuous score is strictly more informative than vote share and
 useful for ranking or downstream thresholding.
 
-Designed for batch processing — runs all four rotations through the model in a
+Designed for batch processing - runs all four rotations through the model in a
 single forward pass on a (4, C, H, W) tensor.
 """
 

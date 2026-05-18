@@ -3,7 +3,7 @@
 Each builder takes ``input_size`` and ``resize_size`` explicitly so
 callers can wire them from whichever source they have (a TrainDefaults,
 a Backbone's train_defaults, a CLI flag). No project-local deps beyond
-torchvision — keeps the import graph acyclic.
+torchvision - keeps the import graph acyclic.
 """
 
 from torchvision import transforms as T
@@ -31,7 +31,7 @@ def build_eval_preprocess(
     input_size: int,
     resize_size: int,
 ) -> T.Compose:
-    """Resize → CenterCrop → ToTensor — the pre-Normalize half of the eval
+    """Resize → CenterCrop → ToTensor - the pre-Normalize half of the eval
     transform. Shared with stats computation, which needs the same shape
     and dtype pipeline but cannot normalise (it's computing the normaliser).
     """

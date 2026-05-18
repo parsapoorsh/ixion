@@ -7,7 +7,7 @@ Run from the project root:
 Recipe knobs live on the chosen backbone's ``train_defaults``; CLI
 flags override individual fields. RunConfig holds the process/IO
 knobs that are independent of model and recipe. Validation is a
-separate process — see ``validator.py``.
+separate process - see ``validator.py``.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RunConfig:
-    """Process / IO / reproducibility — independent of model & recipe."""
+    """Process / IO / reproducibility - independent of model & recipe."""
     device: torch.device
     num_workers: int
     prefetch_factor: int

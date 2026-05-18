@@ -1,6 +1,6 @@
 """EfficientNet-B0 backbone.
 
-~5.3M params, ~0.4 GFLOPs at 224² — roughly 10× less compute than
+~5.3M params, ~0.4 GFLOPs at 224² - roughly 10× less compute than
 ConvNeXt-V2-Tiny. Picked when the loop is GPU-bound, not I/O-bound.
 Trained from scratch.
 """
