@@ -3,10 +3,12 @@
 Builds the model with random init (no training), runs a synthetic
 forward/backward through the training transforms, runs the 4-rotation
 consistency inference on the examples/ directory, and exercises the
-validator + ambiguity-scan code paths in-process against the same
-examples folder. Catches import errors, shape bugs, JXL/PIL/transform
-issues, and obvious model-side problems before launching a real
-training run.
+validator code path in-process against the same examples folder.
+Catches import errors, shape bugs, JXL/PIL/transform issues, and
+obvious model-side problems before launching a real training run.
+
+Device: auto-detected (cuda if available, else cpu). Smoke test, not a
+training entry point — no CLI needed.
 """
 
 import logging
@@ -16,29 +18,30 @@ from torch.utils.data import DataLoader
 
 import config
 import constants
-from async_validator import run_validation, scan_dataset
 from builders import build_eval_transform, build_train_transform
-from datasets import DatasetSpec, ImageLoader, RotationPairDataset
+from datasets import ImageLoader, RotationPairDataset
 from utils.image_io import open_rgb
 from infer import predict_image
 from utils.logsetup import setup_logging
 from models import RotationModel
 from models.backbones import EfficientNetB0
 from stats import get_stats
+from validator import run_validation
 
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
     setup_logging()
-    logger.info("device = %s", config.DEVICE)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("device = %s", device)
 
     backbone = EfficientNetB0()
     defaults = backbone.train_defaults
     model = RotationModel(
         backbone=backbone,
         pretrained=False,
-    ).to(config.DEVICE)
+    ).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info("model params = %.2f M", n_params)
 
@@ -51,6 +54,8 @@ def main() -> None:
         spec,
         input_size=defaults.input_size,
         resize_size=defaults.resize_size,
+        num_workers=0,
+        device=device,
     )
     train_tf = build_train_transform(
         mean=channel_stats.mean,
@@ -60,11 +65,11 @@ def main() -> None:
     )
     batch = torch.stack(
         [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_CLASSES]]
-    ).to(config.DEVICE)
-    labels = torch.tensor(range(constants.NUM_CLASSES), device=config.DEVICE)
+    ).to(device)
+    labels = torch.tensor(range(constants.NUM_CLASSES), device=device)
 
     model.train()
-    with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         logits = model(batch)
         loss = torch.nn.functional.cross_entropy(logits, labels)
     loss.backward()
@@ -84,7 +89,7 @@ def main() -> None:
         pred = predict_image(
             model=model,
             img=img,
-            device=config.DEVICE,
+            device=device,
             mean=channel_stats.mean,
             std=channel_stats.std,
             input_size=defaults.input_size,
@@ -96,13 +101,6 @@ def main() -> None:
             pred.votes, pred.entropy,
         )
 
-    smoke_spec = DatasetSpec(
-        name="smoke_examples",
-        train=eg_dir,
-        val=eg_dir,
-        mean=channel_stats.mean,
-        std=channel_stats.std,
-    )
     eval_tf = build_eval_transform(
         mean=channel_stats.mean,
         std=channel_stats.std,
@@ -120,26 +118,11 @@ def main() -> None:
     val_loss, val_acc, per_class = run_validation(
         model,
         val_loader,
-        device=config.DEVICE,
-        autocast_dtype=torch.bfloat16,
+        device=device,
     )
     logger.info(
         "validator ok. loss=%.3f acc=%.3f per_class=%s",
         val_loss, val_acc, per_class,
-    )
-
-    logger.info("ambiguity scan over examples/ ...")
-    paths, n_weak, n_ambiguous = scan_dataset(
-        model,
-        dataset_specs=[smoke_spec],
-        device=config.DEVICE,
-        batch_size=min(8, len(sample_files)),
-        recipe_input_size=defaults.input_size,
-        recipe_resize_size=defaults.resize_size,
-    )
-    logger.info(
-        "ambiguity scan ok. kept=%d weak=%d ambiguous=%d",
-        len(paths), n_weak, n_ambiguous,
     )
 
 

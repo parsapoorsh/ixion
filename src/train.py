@@ -1,11 +1,13 @@
 """Single-phase training loop.
 
 Run from the project root:
-    venv/bin/python src/train.py
+    venv/bin/python src/train.py --device cuda --batch-size N \\
+        --num-workers N --prefetch-factor N
 
 Recipe knobs live on the chosen backbone's ``train_defaults``; CLI
 flags override individual fields. RunConfig holds the process/IO
-knobs that are independent of model and recipe.
+knobs that are independent of model and recipe. Validation is a
+separate process — see ``validator.py``.
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ from tqdm.auto import tqdm
 import config
 import constants
 import stats
-from async_validator import AmbiguityScanResult, AsyncValidator, ValidationResult
 from datasets import build_train_dataset
 from models import Backbone, ModelEMA, RotationModel, TrainDefaults
 from utils.index import clear_cache
@@ -39,11 +40,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RunConfig:
     """Process / IO / reproducibility — independent of model & recipe."""
-    num_workers: int = constants.NUM_WORKERS
-    prefetch_factor: int = constants.PREFETCH_FACTOR
+    device: torch.device
+    num_workers: int
+    prefetch_factor: int
     seed: int = 42
     log_every: int = 50
-    scan_every_epochs: int = 5  # 0 disables the ambiguity scan
 
 
 def save_checkpoint(
@@ -82,22 +83,25 @@ def set_lr(
 def build_train_loader(
     recipe: TrainDefaults,
     run: RunConfig,
+    batch_size: int,
 ) -> DataLoader:
     logger.info("building train dataset...")
     train_ds = build_train_dataset(
         config.DATASETS,
         input_size=recipe.input_size,
         resize_size=recipe.resize_size,
+        num_workers=run.num_workers,
+        device=run.device,
     )
     logger.info("train pairs: %d", len(train_ds))
     return DataLoader(
         train_ds,
-        batch_size=recipe.batch_size,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=run.num_workers,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=run.prefetch_factor,
+        pin_memory=run.device.type == "cuda",
+        persistent_workers=run.num_workers > 0,
+        prefetch_factor=run.prefetch_factor if run.num_workers > 0 else None,
         drop_last=True,
     )
 
@@ -106,15 +110,16 @@ def train_one_run(
     backbone: Backbone,
     recipe: TrainDefaults,
     run: RunConfig,
+    batch_size: int,
     resume_from: Path | None = None,
 ) -> None:
     torch.manual_seed(run.seed)
-    train_loader = build_train_loader(recipe, run)
+    train_loader = build_train_loader(recipe, run, batch_size)
 
     model = RotationModel(
         backbone=backbone,
         pretrained=False,
-    ).to(config.DEVICE)
+    ).to(run.device)
     ema = ModelEMA(model, decay=recipe.ema_decay)
 
     optimizer = torch.optim.AdamW(
@@ -138,7 +143,7 @@ def train_one_run(
         # Restore model + EMA shadow + EMA step. Optimizer state is not
         # checkpointed; Adam's moment estimates re-warm in a few hundred
         # steps, which is negligible against the LR schedule.
-        payload = torch.load(resume_from, map_location=config.DEVICE, weights_only=False)
+        payload = torch.load(resume_from, map_location=run.device, weights_only=False)
         model.load_state_dict(payload["model"])
         ema.module.load_state_dict(payload["ema"])
         ema.step = int(payload.get("ema_step", 0))
@@ -148,109 +153,68 @@ def train_one_run(
             resume_from, start_epoch, ema.step,
         )
 
-    validator = AsyncValidator(
-        backbone=backbone,
-        recipe=recipe,
-        dataset_specs=config.DATASETS,
-        device_index=1,
-    )
+    global_step = start_epoch * steps_per_epoch
+    for epoch in range(start_epoch, recipe.epochs):
+        model.train()
+        epoch_start = time.monotonic()
+        running_loss = 0.0
+        running_correct = 0
+        running_seen = 0
 
-    def log_results() -> None:
-        for r in validator.drain():
-            if isinstance(r, ValidationResult):
+        pbar = tqdm(
+            train_loader,
+            desc=f"epoch {epoch}",
+            unit="batch",
+            leave=False,
+            file=sys.stdout,
+        )
+        for imgs, labels in pbar:
+            imgs = imgs.to(run.device, non_blocking=True)
+            labels = labels.to(run.device, non_blocking=True)
+
+            scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
+            set_lr(optimizer, recipe.lr, scale)
+
+            with torch.autocast(device_type=run.device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
+                logits = model(imgs)
+                loss = loss_fn(logits, labels)
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), recipe.grad_clip)
+            optimizer.step()
+            ema.update(model)
+
+            running_loss += loss.item() * imgs.size(0)
+            running_correct += (logits.argmax(dim=1) == labels).sum().item()
+            running_seen += imgs.size(0)
+
+            lr_now = optimizer.param_groups[0]["lr"]
+            acc = running_correct / max(1, running_seen)
+            avg_loss = running_loss / max(1, running_seen)
+            pbar.set_postfix(
+                loss=f"{avg_loss:.4f}",
+                acc=f"{acc:.3f}",
+                lr=f"{lr_now:.2e}",
+            )
+            if global_step % run.log_every == 0:
                 logger.info(
-                    "validation epoch %d loss=%.4f acc=%.4f per_class=%s (%.0fs)",
-                    r.epoch, r.loss, r.acc, r.per_class, r.seconds,
+                    "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
+                    epoch, global_step, total_steps, avg_loss, acc, lr_now,
                 )
-            elif isinstance(r, AmbiguityScanResult):
-                logger.info(
-                    "ambiguity scan epoch %d -> %s (weak=%d ambiguous=%d total=%d in %.0fs)",
-                    r.epoch, r.output_path, r.n_weak, r.n_ambiguous, r.n_total, r.seconds,
-                )
+            global_step += 1
 
-    try:
-        global_step = start_epoch * steps_per_epoch
-        if resume_from is not None:
-            # Kick off a validation of the loaded checkpoint right away so the
-            # resumed run reports a real val acc at startup instead of waiting
-            # until the end of the first resumed epoch. The result drains
-            # through log_results() once the child finishes.
-            resumed_epoch = start_epoch - 1
-            logger.info(
-                "submitting startup validation for resumed epoch %d",
-                resumed_epoch,
-            )
-            validator.submit(ema.module, resumed_epoch)
+        dt = time.monotonic() - epoch_start
+        logger.info(
+            "epoch %d done in %.0fs, throughput %.1f img/s",
+            epoch, dt, running_seen / dt,
+        )
 
-        for epoch in range(start_epoch, recipe.epochs):
-            model.train()
-            epoch_start = time.monotonic()
-            running_loss = 0.0
-            running_correct = 0
-            running_seen = 0
+        ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
+        save_checkpoint(ckpt, model, ema, extras={"epoch": epoch})
+        logger.info("saved %s", ckpt)
 
-            pbar = tqdm(
-                train_loader,
-                desc=f"epoch {epoch}",
-                unit="batch",
-                leave=False,
-                file=sys.stdout,
-            )
-            for imgs, labels in pbar:
-                log_results()
-                imgs = imgs.to(config.DEVICE, non_blocking=True)
-                labels = labels.to(config.DEVICE, non_blocking=True)
-
-                scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
-                set_lr(optimizer, recipe.lr, scale)
-
-                with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
-                    logits = model(imgs)
-                    loss = loss_fn(logits, labels)
-
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), recipe.grad_clip)
-                optimizer.step()
-                ema.update(model)
-
-                running_loss += loss.item() * imgs.size(0)
-                running_correct += (logits.argmax(dim=1) == labels).sum().item()
-                running_seen += imgs.size(0)
-
-                lr_now = optimizer.param_groups[0]["lr"]
-                acc = running_correct / max(1, running_seen)
-                avg_loss = running_loss / max(1, running_seen)
-                pbar.set_postfix(
-                    loss=f"{avg_loss:.4f}",
-                    acc=f"{acc:.3f}",
-                    lr=f"{lr_now:.2e}",
-                )
-                if global_step % run.log_every == 0:
-                    logger.info(
-                        "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
-                        epoch, global_step, total_steps, avg_loss, acc, lr_now,
-                    )
-                global_step += 1
-
-            dt = time.monotonic() - epoch_start
-            logger.info(
-                "epoch %d done in %.0fs, throughput %.1f img/s",
-                epoch, dt, running_seen / dt,
-            )
-            validator.submit(ema.module, epoch)
-            if run.scan_every_epochs > 0 and (epoch + 1) % run.scan_every_epochs == 0:
-                validator.submit_scan(ema.module, epoch)
-
-            ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
-            save_checkpoint(ckpt, model, ema, extras={"epoch": epoch})
-            logger.info("saved %s", ckpt)
-
-        log_results()
-        logger.info("done.")
-    finally:
-        validator.shutdown()
-        log_results()
+    logger.info("done.")
 
 
 def main() -> None:
@@ -263,40 +227,40 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
+        "--device",
+        type=str,
+        required=True,
+        help="torch device string (e.g. 'cuda', 'cuda:0', 'cpu')",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        required=True,
+        help="images per training step",
+    )
+    p.add_argument(
+        "--num-workers",
+        type=int,
+        required=True,
+        help="DataLoader worker processes for image decoding",
+    )
+    p.add_argument(
+        "--prefetch-factor",
+        type=int,
+        required=True,
+        help="batches each worker keeps queued ahead of the consumer",
+    )
+    p.add_argument(
         "--epochs",
         type=int,
         default=defaults.epochs,
         help="number of full passes over the (4x-rotated) training set",
     )
     p.add_argument(
-        "--batch-size",
-        type=int,
-        default=defaults.batch_size,
-        help="images per training step (sized for the 5060 Ti shared with the desktop)",
-    )
-    p.add_argument(
-        "--num-workers",
-        type=int,
-        default=RunConfig.num_workers,
-        help="DataLoader worker processes for image decoding",
-    )
-    p.add_argument(
-        "--prefetch-factor",
-        type=int,
-        default=RunConfig.prefetch_factor,
-        help="batches each worker keeps queued ahead of the consumer (deeper queues mask HDD latency, use more RAM)",
-    )
-    p.add_argument(
         "--seed",
         type=int,
-        default=RunConfig.seed,
+        default=42,
         help="torch RNG seed for the training loop",
-    )
-    p.add_argument(
-        "--scan-every",
-        type=int,
-        default=RunConfig.scan_every_epochs,
-        help="emit cache/ambiguity.json every N epochs from cuda:1 (0 disables)",
     )
     p.add_argument(
         "--invalidate-cache",
@@ -318,19 +282,19 @@ def main() -> None:
     recipe = dataclasses.replace(
         defaults,
         epochs=args.epochs,
-        batch_size=args.batch_size,
     )
     logger.info("backbone=%s recipe=%s", backbone.name, recipe)
     run = RunConfig(
+        device=torch.device(args.device),
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         seed=args.seed,
-        scan_every_epochs=args.scan_every,
     )
     train_one_run(
         backbone,
         recipe,
         run,
+        batch_size=args.batch_size,
         resume_from=args.resume,
     )
 
