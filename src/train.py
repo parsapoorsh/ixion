@@ -70,15 +70,6 @@ def cosine_with_warmup(step: int, total_steps: int, warmup: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
-def set_lr(
-    optimizer: torch.optim.Optimizer,
-    base_lr: float,
-    scale: float,
-) -> None:
-    for group in optimizer.param_groups:
-        group["lr"] = base_lr * scale
-
-
 def build_train_loader(
     run: RunConfig,
     batch_size: int,
@@ -173,7 +164,10 @@ def train_one_run(
             labels = labels.to(run.device, non_blocking=True)
 
             scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
-            set_lr(optimizer, lr, scale)
+
+            # set lr
+            for group in optimizer.param_groups:
+                group["lr"] = lr * scale
 
             with torch.autocast(device_type=run.device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
                 logits = model(imgs)
