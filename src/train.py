@@ -107,7 +107,7 @@ def build_train_loader(run: RunConfig) -> DataLoader:
 def train_one_run(
     run: RunConfig,
     epochs: int = 100,
-    lr: float = 0.1,
+    lr: float = 0.05,
     momentum: float = 0.9,
     weight_decay: float = 1e-4,
     label_smoothing: float = 0.1,
