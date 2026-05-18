@@ -53,8 +53,11 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     extras: dict | None = None,
 ) -> None:
+    # torch.compile() wraps the module and prefixes state_dict keys with
+    # "_orig_mod." - unwrap so checkpoints stay portable across compile.
+    raw_model = getattr(model, "_orig_mod", model)
     payload: dict = {
-        "model": model.state_dict(),
+        "model": raw_model.state_dict(),
         "ema": ema.state_dict(),
         "ema_step": ema.step,
         "optimizer": optimizer.state_dict(),
@@ -158,6 +161,10 @@ def train_one_run(
             "resumed from %s (next epoch=%d, ema_step=%d)",
             resume_from, start_epoch, ema.step,
         )
+
+    # Compile after any state_dict load so checkpoints are saved/loaded in
+    # uncompiled form (no "_orig_mod." prefix in the on-disk dict).
+    model = torch.compile(model)
 
     global_step = start_epoch * steps_per_epoch
     for epoch in range(start_epoch, epochs):
