@@ -25,8 +25,6 @@ from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
 
-VALIDATION_LOG_EVERY = 50
-
 
 @torch.no_grad()
 def run_validation(
@@ -57,7 +55,7 @@ def run_validation(
             correct[c] += (preds[mask] == c).sum()
         total_loss += loss.item() * imgs.size(0)
         total_n += imgs.size(0)
-        if batch_idx % VALIDATION_LOG_EVERY == 0:
+        if batch_idx % constants.LOG_STEP == 0:
             logger.info(
                 "validation batch %d/%d running_acc=%.4f",
                 batch_idx, n_batches,

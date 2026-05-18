@@ -44,7 +44,7 @@ class RunConfig:
     num_workers: int
     prefetch_factor: int
     seed: int
-    log_every: int = 50
+    log_every: int = constants.LOG_STEP
 
 
 def save_checkpoint(
