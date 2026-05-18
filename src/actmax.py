@@ -97,7 +97,7 @@ def maximise(
 
         if blur_every > 0 and (step + 1) % blur_every == 0:
             with torch.no_grad():
-                img.data = gaussian_blur(img.data, kernel_size=[3], sigma=[0.5])
+                img.data = gaussian_blur(img.data, kernel_size=[3, 3], sigma=[0.5, 0.5])
 
     with torch.no_grad():
         prob = model(img).softmax(dim=1)[0, target_class].item()

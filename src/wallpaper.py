@@ -113,12 +113,12 @@ def generate(
         crop = random_crop(img, crop_size)
         if jitter > 0:
             crop = random_jitter(crop, jitter)
-        loss = -model(crop)[0, target_class]
+        logits = model(crop)
+        loss = -logits[0, target_class]
         loss.backward()
         opt.step()
 
-        with torch.no_grad():
-            prob = model(crop).softmax(dim=1)[0, target_class].item()
+        prob = logits.detach().softmax(dim=1)[0, target_class].item()
         bar.set_postfix(prob=f"{prob:.1%}")
 
     with torch.no_grad():
