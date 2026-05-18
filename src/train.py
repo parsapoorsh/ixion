@@ -179,7 +179,7 @@ def train_one_run(
                 scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
                 set_lr(optimizer, recipe.lr, scale)
 
-                with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):
+                with torch.autocast(device_type=config.DEVICE.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
                     logits = model(imgs)
                     loss = loss_fn(logits, labels)
 
