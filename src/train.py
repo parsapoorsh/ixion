@@ -50,12 +50,14 @@ def save_checkpoint(
     path: Path,
     model: nn.Module,
     ema: ModelEMA,
+    optimizer: torch.optim.Optimizer,
     extras: dict | None = None,
 ) -> None:
     payload: dict = {
         "model": model.state_dict(),
         "ema": ema.state_dict(),
         "ema_step": ema.step,
+        "optimizer": optimizer.state_dict(),
     }
     if extras:
         payload.update(extras)
@@ -131,13 +133,12 @@ def train_one_run(
 
     start_epoch = 0
     if resume_from is not None:
-        # Restore model + EMA shadow + EMA step. Optimizer state is not
-        # checkpointed; Adam's moment estimates re-warm in a few hundred
-        # steps, which is negligible against the LR schedule.
         payload = torch.load(resume_from, map_location=run.device, weights_only=False)
         model.load_state_dict(payload["model"])
         ema.module.load_state_dict(payload["ema"])
         ema.step = int(payload.get("ema_step", 0))
+        if "optimizer" in payload:
+            optimizer.load_state_dict(payload["optimizer"])
         start_epoch = int(payload["epoch"]) + 1
         logger.info(
             "resumed from %s (next epoch=%d, ema_step=%d)",
@@ -209,7 +210,7 @@ def train_one_run(
         )
 
         ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
-        save_checkpoint(ckpt, model, ema, extras={"epoch": epoch})
+        save_checkpoint(ckpt, model, ema, optimizer, extras={"epoch": epoch})
         logger.info("saved %s", ckpt)
 
     logger.info("done.")
