@@ -3,12 +3,6 @@
 from pathlib import Path
 
 from datasets import DatasetSpec
-from models.backbones import EfficientNetB0
-
-
-# Architecture used by train. Single source of truth - to switch
-# arch, swap the class here.
-DEFAULT_BACKBONE = EfficientNetB0()
 
 
 # ImageNet normalization constants - left here as a convenience for anyone

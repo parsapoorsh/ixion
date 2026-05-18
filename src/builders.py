@@ -1,9 +1,9 @@
 """Transform factories for training and evaluation.
 
 Each builder takes ``input_size`` and ``resize_size`` explicitly so
-callers can wire them from whichever source they have (a TrainDefaults,
-a Backbone's train_defaults, a CLI flag). No project-local deps beyond
-torchvision - keeps the import graph acyclic.
+callers can wire them from whichever source they have (constants, a
+CLI flag). No project-local deps beyond torchvision - keeps the
+import graph acyclic.
 """
 
 from torchvision import transforms as T

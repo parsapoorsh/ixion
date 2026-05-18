@@ -1,28 +1,33 @@
-"""Arch-agnostic rotation wrapper: backbone + 4-class head.
+"""Rotation model: EfficientNet-B0 backbone + 4-class head.
 
-The backbone is any ``Backbone`` instance (see ``models.base``). The
-head is shared across architectures so the forward signature stays
-identical regardless of which backbone is in use.
+Trained from scratch (no ImageNet weights). The backbone is built via
+timm; the head is AdaptiveAvgPool (already inside timm with
+``global_pool='avg'``) → LayerNorm → Dropout → Linear.
 """
 
 from __future__ import annotations
 
+import timm
 import torch
 from torch import nn
 
 import constants
-from models.base import Backbone
 
 
 class RotationModel(nn.Module):
     def __init__(
         self,
-        backbone: Backbone,
-        pretrained: bool,
+        pretrained: bool = False,
         drop_rate: float = 0.2,
     ) -> None:
         super().__init__()
-        self.backbone, feat_dim = backbone.build(pretrained=pretrained)
+        self.backbone = timm.create_model(
+            "efficientnet_b0",
+            pretrained=pretrained,
+            num_classes=0,
+            global_pool="avg",
+        )
+        feat_dim: int = self.backbone.num_features  # 1280 # pyright: ignore[reportAssignmentType]
         self.head = nn.Sequential(
             nn.LayerNorm(feat_dim),
             nn.Dropout(drop_rate),

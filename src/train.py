@@ -4,10 +4,10 @@ Run from the project root:
     venv/bin/python src/train.py --device cuda --batch-size N \\
         --num-workers N --prefetch-factor N
 
-Recipe knobs live on the chosen backbone's ``train_defaults``; CLI
-flags override individual fields. RunConfig holds the process/IO
-knobs that are independent of model and recipe. Validation is a
-separate process - see ``validator.py``.
+``TrainRecipe`` carries the optimisation knobs; CLI flags override
+individual fields. ``RunConfig`` holds the process/IO knobs that are
+independent of the recipe. Validation is a separate process - see
+``validator.py``.
 """
 
 from __future__ import annotations
@@ -30,16 +30,28 @@ import config
 import constants
 import stats
 from datasets import build_train_dataset
-from models import Backbone, ModelEMA, RotationModel, TrainDefaults
+from models import ModelEMA, RotationModel
 from utils.index import clear_cache
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class TrainRecipe:
+    """Optimisation knobs for the training loop."""
+    epochs: int = 100
+    lr: float = 1e-3
+    weight_decay: float = 0.05
+    label_smoothing: float = 0.1
+    warmup_epochs: int = 5
+    grad_clip: float = 1.0
+    ema_decay: float = 0.9999
+
+
 @dataclass
 class RunConfig:
-    """Process / IO / reproducibility - independent of model & recipe."""
+    """Process / IO / reproducibility - independent of recipe."""
     device: torch.device
     num_workers: int
     prefetch_factor: int
@@ -81,15 +93,14 @@ def set_lr(
 
 
 def build_train_loader(
-    recipe: TrainDefaults,
     run: RunConfig,
     batch_size: int,
 ) -> DataLoader:
     logger.info("building train dataset...")
     train_ds = build_train_dataset(
         config.DATASETS,
-        input_size=recipe.input_size,
-        resize_size=recipe.resize_size,
+        input_size=constants.INPUT_SIZE,
+        resize_size=constants.RESIZE_SIZE,
         num_workers=run.num_workers,
         device=run.device,
     )
@@ -107,19 +118,15 @@ def build_train_loader(
 
 
 def train_one_run(
-    backbone: Backbone,
-    recipe: TrainDefaults,
+    recipe: TrainRecipe,
     run: RunConfig,
     batch_size: int,
     resume_from: Path | None = None,
 ) -> None:
     torch.manual_seed(run.seed)
-    train_loader = build_train_loader(recipe, run, batch_size)
+    train_loader = build_train_loader(run, batch_size)
 
-    model = RotationModel(
-        backbone=backbone,
-        pretrained=False,
-    ).to(run.device)
+    model = RotationModel(pretrained=False).to(run.device)
     ema = ModelEMA(model, decay=recipe.ema_decay)
 
     optimizer = torch.optim.AdamW(
@@ -219,8 +226,7 @@ def train_one_run(
 
 def main() -> None:
     setup_logging()
-    backbone = config.DEFAULT_BACKBONE
-    defaults = backbone.train_defaults
+    defaults = TrainRecipe()
 
     p = argparse.ArgumentParser(
         description="Train the rotation detector.",
@@ -283,7 +289,7 @@ def main() -> None:
         defaults,
         epochs=args.epochs,
     )
-    logger.info("backbone=%s recipe=%s", backbone.name, recipe)
+    logger.info("recipe=%s", recipe)
     run = RunConfig(
         device=torch.device(args.device),
         num_workers=args.num_workers,
@@ -291,7 +297,6 @@ def main() -> None:
         seed=args.seed,
     )
     train_one_run(
-        backbone,
         recipe,
         run,
         batch_size=args.batch_size,

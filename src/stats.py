@@ -190,12 +190,11 @@ def compute_stats(
 
 def main() -> None:
     setup_logging()
-    defaults = config.DEFAULT_BACKBONE.train_defaults
 
     p = argparse.ArgumentParser(
         description="Compute per-dataset channel mean/std and cache the result. "
                     "By default runs every dataset in config.DATASETS at the "
-                    "configured backbone's preprocess sizes.",
+                    "model's preprocess sizes.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
@@ -213,13 +212,13 @@ def main() -> None:
     p.add_argument(
         "--input-size",
         type=int,
-        default=defaults.input_size,
+        default=constants.INPUT_SIZE,
         help="crop size used as the model input (drives the stats cache key)",
     )
     p.add_argument(
         "--resize-size",
         type=int,
-        default=defaults.resize_size,
+        default=constants.RESIZE_SIZE,
         help="pre-crop resize, applied before CenterCrop",
     )
     p.add_argument(

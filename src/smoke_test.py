@@ -24,7 +24,6 @@ from utils.image_io import open_rgb
 from infer import predict_image
 from utils.logsetup import setup_logging
 from models import RotationModel
-from models.backbones import EfficientNetB0
 from stats import get_stats
 from validator import run_validation
 
@@ -36,12 +35,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("device = %s", device)
 
-    backbone = EfficientNetB0()
-    defaults = backbone.train_defaults
-    model = RotationModel(
-        backbone=backbone,
-        pretrained=False,
-    ).to(device)
+    model = RotationModel(pretrained=False).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info("model params = %.2f M", n_params)
 
@@ -52,16 +46,16 @@ def main() -> None:
     spec = config.DATASETS[0]
     channel_stats = get_stats(
         spec,
-        input_size=defaults.input_size,
-        resize_size=defaults.resize_size,
+        input_size=constants.INPUT_SIZE,
+        resize_size=constants.RESIZE_SIZE,
         num_workers=0,
         device=device,
     )
     train_tf = build_train_transform(
         mean=channel_stats.mean,
         std=channel_stats.std,
-        input_size=defaults.input_size,
-        resize_size=defaults.resize_size,
+        input_size=constants.INPUT_SIZE,
+        resize_size=constants.RESIZE_SIZE,
     )
     batch = torch.stack(
         [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_CLASSES]]
@@ -92,8 +86,8 @@ def main() -> None:
             device=device,
             mean=channel_stats.mean,
             std=channel_stats.std,
-            input_size=defaults.input_size,
-            resize_size=defaults.resize_size,
+            input_size=constants.INPUT_SIZE,
+            resize_size=constants.RESIZE_SIZE,
         )
         logger.info(
             "%-25s rot=%s conf=%-9s (%.1f%%) votes=%s entropy=%.3f",
@@ -104,8 +98,8 @@ def main() -> None:
     eval_tf = build_eval_transform(
         mean=channel_stats.mean,
         std=channel_stats.std,
-        input_size=defaults.input_size,
-        resize_size=defaults.resize_size,
+        input_size=constants.INPUT_SIZE,
+        resize_size=constants.RESIZE_SIZE,
     )
     val_ds = RotationPairDataset(ImageLoader(sample_files), eval_tf)
     val_loader = DataLoader(

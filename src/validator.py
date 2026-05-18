@@ -1,9 +1,9 @@
 """Standalone validation CLI for a single checkpoint.
 
-Loads a checkpoint, builds the val dataset from ``config.DATASETS`` at
-the configured backbone's preprocess sizes, and runs one validation
-pass. No autocast, no async machinery, no train-loop coupling - point
-it at any checkpoint with any device.
+Loads a checkpoint, builds the val dataset from ``config.DATASETS``
+at the model's preprocess sizes, and runs one validation pass. No
+autocast, no async machinery, no train-loop coupling - point it at
+any checkpoint with any device.
 """
 
 from __future__ import annotations
@@ -84,9 +84,6 @@ def validate_checkpoint(
     checkpoint to load. Helpful for separating "EMA shadow is bad" from
     "validator code is bad".
     """
-    backbone = config.DEFAULT_BACKBONE
-    recipe = backbone.train_defaults
-
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     logger.info(
         "loaded %s (epoch=%s, ema_step=%s, weights=%s)",
@@ -102,16 +99,13 @@ def validate_checkpoint(
             f"checkpoint missing '{state_key}' state dict; keys={list(payload)}"
         )
 
-    model = RotationModel(
-        backbone=backbone,
-        pretrained=False,
-    ).to(device)
+    model = RotationModel(pretrained=False).to(device)
     model.load_state_dict(payload[state_key])
 
     val_ds = build_val_dataset(
         config.DATASETS,
-        input_size=recipe.input_size,
-        resize_size=recipe.resize_size,
+        input_size=constants.INPUT_SIZE,
+        resize_size=constants.RESIZE_SIZE,
         num_workers=num_workers,
         device=device,
     )
