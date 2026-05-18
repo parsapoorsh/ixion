@@ -13,19 +13,18 @@ real-time.
 
 ## Hardware target
 
-- **Training + display**: RTX 5060 Ti 16GB (Blackwell, sm_120). Same card
-  drives the desktop, so expect ~0.5–1 GB of VRAM permanently reserved by
-  the compositor - leave headroom when sizing batches. Requires PyTorch
-  with CUDA 12.8+ wheels. BF16 mixed precision is the native fast path.
-- **Second GPU**: a GTX 1660 SUPER 6GB is physically installed alongside
-  the 5060 Ti but is currently not used for anything. **Do not** wire it
-  into training/DDP - Turing has no BF16 tensor cores and the 6GB would
-  bottleneck the per-GPU batch size on the faster card. The realistic
-  future use is as a display-offload card so the 5060 Ti's VRAM is
-  freed up for compute.
-- **Inference VRAM budget**: ≤ 250 MB. Comfortable via ONNX Runtime at
-  deployment time; PyTorch's CUDA context alone eats ~180 MB so dev
-  measurements look higher than the eventual deployment.
+The codebase itself is hardware-agnostic — every CLI takes `--device`,
+`--batch-size`, `--num-workers`, and `--prefetch-factor` as required
+flags. The user's dev machine is an RTX 5060 Ti 16GB (Blackwell,
+sm_120) that also drives the desktop, so a fresh run there leaves
+~0.5–1 GB of VRAM permanently reserved by the compositor — size
+batches with that in mind. Requires PyTorch with CUDA 12.8+ wheels for
+this card. BF16 autocast is the only mixed-precision path in
+`train.py`; the validator runs fp32.
+
+**Inference VRAM budget**: ≤ 250 MB. Comfortable via ONNX Runtime at
+deployment time; PyTorch's CUDA context alone eats ~180 MB so dev
+measurements look higher than the eventual deployment.
 
 ## Model architecture
 
@@ -55,14 +54,16 @@ Single phase, from random init. No frozen warm-up phase, no
 noise-filtering pass - both were over-engineered.
 
 Recipe knobs live per-backbone in a `TrainDefaults` dataclass on the
-Backbone class (`epochs`, `batch_size`, `lr`, `weight_decay`,
-`label_smoothing`, `warmup_epochs`, `grad_clip`, `ema_decay`,
-`input_size`, `resize_size`). `train.main()` reads them from
-`config.DEFAULT_BACKBONE.train_defaults` and applies CLI overrides via
-`dataclasses.replace`. There's no `TrainConfig` wrapper - `train_one_run`
-takes `(backbone, recipe: TrainDefaults, run: RunConfig)` directly.
-`RunConfig` carries process/IO/seed knobs (num_workers, prefetch_factor,
-seed, log_every, val_interval_epochs) - independent of model and recipe.
+Backbone class (`epochs`, `lr`, `weight_decay`, `label_smoothing`,
+`warmup_epochs`, `grad_clip`, `ema_decay`, `input_size`,
+`resize_size`). `batch_size` is **not** a recipe knob — it's a
+hardware decision and lives only on the CLI. `train.main()` reads the
+recipe from `config.DEFAULT_BACKBONE.train_defaults` and applies CLI
+overrides via `dataclasses.replace`. There's no `TrainConfig` wrapper —
+`train_one_run` takes `(backbone, recipe: TrainDefaults, run:
+RunConfig, batch_size: int)` directly. `RunConfig` carries the
+process/IO knobs (`device`, `num_workers`, `prefetch_factor`, `seed`,
+`log_every`) — independent of model and recipe.
 
 Shared values across both shipped backbones:
 - BF16 autocast, AdamW (β=0.9/0.999), weight_decay 0.05
@@ -72,15 +73,6 @@ Shared values across both shipped backbones:
 - Gradient clip at norm=1.0
 - 100 epochs
 - input_size=224, resize_size=232
-
-Per-backbone differences:
-- `EfficientNetB0`: batch 256 (small activations, fits easily)
-- `ConvNeXtV2Tiny`: batch 64 (BF16 activations at 224² push past the
-  15.47 GiB card budget at 128 with the desktop compositor sharing
-  VRAM; 64 fits with headroom)
-
-Wall-clock estimate (ConvNeXt-V2-Tiny): ~5 days for 100 epochs on the
-5060 Ti. EfficientNet-B0 is ~10× less compute, so plausibly ~12h.
 
 ### Augmentations - be careful here
 
@@ -117,43 +109,44 @@ Wall-clock estimate (ConvNeXt-V2-Tiny): ~5 days for 100 epochs on the
   Guarantees balanced classes and full coverage every epoch.
 - **Per-dataset normalization**: each `DatasetSpec` can carry an explicit
   `mean`/`std`, or leave them as `None` (the default). When `None`,
-  `stats.get_stats(spec, input_size, resize_size)` samples
-  `config.STATS_SAMPLE_FRACTION` (5% default) of the train split with seed
-  `config.STATS_SAMPLE_SEED`, computes per-channel mean/std, and caches
-  the result as JSON under `cache/stats_<name>_<resize>x<input>.json`.
-  The cache filename includes both sizes because stats depend on the
-  actual pixels after Resize→CenterCrop - a different preprocess
-  silently reusing stale numbers would be a bug. Default `DATASETS` in
-  `config.py` pass `None` for both shipped datasets; `IMAGENET_MEAN`/
-  `IMAGENET_STD` remain in `config.py` so a spec can be pinned to fixed
-  constants when wanted. `build_train_dataset` / `build_val_dataset`
-  (in `datasets.py`) take `input_size`/`resize_size` and call
-  `get_stats(spec, ...)` per spec, then `ConcatDataset` the per-spec
-  parts. The sizes are sourced from the chosen Backbone's
-  `train_defaults` - they used to be globals in `config.py` and were
-  moved when EfficientNet-B0 landed (different timm archs want
-  different native sizes; B1=240, B2=256, etc.).
-- **Stats computation** is GPU-accelerated: a `StatsDataset` decodes images
-  via the shared `build_eval_preprocess()` pipeline (Resize → CenterCrop
-  → ToTensor, no Normalize - we're computing the normaliser), workers
-  parallelise decode, the per-batch sum/sum-of-squares reduces on
-  `config.DEVICE` in float32, and accumulation happens on CPU in float64
-  (consumer GPUs are ~1/64 speed for float64). The sample is sorted by
-  path *after* sampling so reads happen in on-disk locality order - a
-  cheap win regardless of storage medium. `prefetch_factor=
-  constants.PREFETCH_FACTOR` (default 4) keeps each worker's queue deep
-  enough to mask decode latency; `train` exposes `--prefetch-factor` to
-  widen it further if the GPU shows bursty utilization.
-  tqdm shows progress in images/s with a
-  per-image `pbar.update(b)`. Changing `STATS_SAMPLE_FRACTION` needs
+  `stats.get_stats(spec, input_size, resize_size, num_workers, device)`
+  samples `config.STATS_SAMPLE_FRACTION` (5% default) of the train split
+  with seed `config.STATS_SAMPLE_SEED`, computes per-channel mean/std,
+  and caches the result as JSON under
+  `cache/stats_<name>_<resize>x<input>.json`. The cache filename includes
+  both sizes because stats depend on the actual pixels after
+  Resize→CenterCrop - a different preprocess silently reusing stale
+  numbers would be a bug. Default `DATASETS` in `config.py` pass `None`
+  for both shipped datasets; `IMAGENET_MEAN`/`IMAGENET_STD` remain in
+  `config.py` so a spec can be pinned to fixed constants when wanted.
+  `build_train_dataset` / `build_val_dataset` (in `datasets.py`) take
+  `input_size`/`resize_size`/`num_workers`/`device` and thread them
+  into `get_stats`, then `ConcatDataset` the per-spec parts. The sizes
+  are sourced from the chosen Backbone's `train_defaults` - they used
+  to be globals in `config.py` and were moved when EfficientNet-B0
+  landed (different timm archs want different native sizes; B1=240,
+  B2=256, etc.).
+- **Stats computation** is device-accelerated: images are decoded via
+  the shared `build_eval_preprocess()` pipeline (Resize → CenterCrop →
+  ToTensor, no Normalize — we're computing the normaliser), workers
+  parallelise decode, the per-batch sum/sum-of-squares reduces on the
+  caller-supplied device in float32, and accumulation happens on CPU in
+  float64 (consumer GPUs are ~1/64 speed for float64). The sample is
+  sorted by path *after* sampling so reads happen in on-disk locality
+  order — a cheap win regardless of storage medium. The stats CLI takes
+  `--device`, `--num-workers` (both required) so the loader matches the
+  machine it runs on. tqdm shows progress in images/s with a per-image
+  `pbar.update(b)`. Changing `STATS_SAMPLE_FRACTION` needs
   `--invalidate-cache`; the cache file doesn't track which fraction
   produced it. Stats are computed *after* the resize, so the std comes
-  out higher than canonical ImageNet (~0.27 vs 0.229) - that's expected
+  out higher than canonical ImageNet (~0.27 vs 0.229) — that's expected
   and consistent with the input distribution the model actually sees.
   Don't "fix" by hardcoding canonical numbers.
-- **Worker count**: `constants.NUM_WORKERS` (default 8) is the single source
-  of truth for DataLoader workers across `train` and `stats`. Every CLI
-  exposes `--num-workers` to override per-run.
+- **DataLoader knobs are caller-supplied**: there's no
+  `constants.NUM_WORKERS` / `constants.PREFETCH_FACTOR` default. Every
+  CLI requires `--num-workers` and `--prefetch-factor` and passes them
+  down through `RunConfig`/builders so the library never silently picks
+  a value sized for one machine.
 - **Checkpointing**: `train.py` dumps `checkpoints/epoch_NNN.pt` after every
   epoch (both raw and EMA state dicts, plus `epoch` and the latest val
   `acc`). Earlier we kept only `best.pt` and `last.pt`; switched to
@@ -197,24 +190,27 @@ ML-domain code lives at `src/` root; general-purpose helpers live under
 `src/utils/` (a real package, with `__init__.py`).
 
 ```
-config.py         DEVICE, IMAGENET_MEAN/STD, DATASETS (instances),
+config.py         IMAGENET_MEAN/STD, DATASETS (instances),
                   DEFAULT_BACKBONE (Backbone instance - the single
                   source of truth for the chosen arch),
-                  STATS_SAMPLE_FRACTION/SEED
+                  STATS_SAMPLE_FRACTION/SEED. No DEVICE — every CLI
+                  takes --device explicitly.
 constants.py      ROTATIONS, NUM_CLASSES, PROJECT_ROOT, CHECKPOINT_DIR,
-                  INDEX_CACHE_DIR, LOGS_DIR, NUM_WORKERS, PREFETCH_FACTOR
-                  - domain constants and static paths depended on by
-                  datasets/model/train/infer/utils without going through
-                  config
+                  INDEX_CACHE_DIR, LOGS_DIR, LOG_STEP — domain constants
+                  and static paths depended on by datasets/model/train/
+                  infer/utils without going through config. No hardware
+                  knobs (NUM_WORKERS/PREFETCH_FACTOR) live here.
 datasets.py       DatasetSpec dataclass (name, train, val, mean=None, std=None),
                   ImageLoader (PIL by index), RotationPairDataset (4× wrapper),
-                  build_train_dataset / build_val_dataset (take input_size +
-                  resize_size, call get_stats + the transforms from builders,
-                  then ConcatDataset the per-spec parts)
-stats.py          get_stats(spec, input_size, resize_size) +
-                  compute_stats (GPU-accelerated via a DataLoader +
-                  StatsDataset) + sample_files (sorted by path) + CLI
-                  for ad-hoc stats runs. Sampled mean/std cached as
+                  build_train_dataset / build_val_dataset (take input_size,
+                  resize_size, num_workers, device; call get_stats + the
+                  transforms from builders, then ConcatDataset the per-spec
+                  parts)
+stats.py          get_stats(spec, input_size, resize_size, num_workers,
+                  device) + compute_stats (device-accelerated via a
+                  DataLoader + ImageLoader) + sample_files (sorted by
+                  path) + CLI for ad-hoc stats runs (--device, --num-workers
+                  required). Sampled mean/std cached as
                   cache/stats_<name>_<resize>x<input>.json - sizes in
                   the filename so a different preprocess can't reuse
                   stale numbers. Explicit spec.mean/spec.std bypasses
@@ -247,12 +243,19 @@ infer.py          Prediction dataclass (rotation, confidence categorical,
                   confidence_pct continuous, votes, entropy) +
                   predict_image (takes input_size/resize_size from the
                   caller, runs 4-rotation consistency + posterior averaging)
-train.py          ModelEMA (inlined - only used here), RunConfig,
-                  ValidationResult, run_validation, save_checkpoint,
-                  cosine_with_warmup, set_lr, train_one_run (takes
-                  backbone, recipe: TrainDefaults, run: RunConfig - no
-                  TrainConfig wrapper), main
-smoke_test.py     Wiring sanity test on examples/
+train.py          ModelEMA (inlined - only used here), RunConfig (device,
+                  num_workers, prefetch_factor, seed, log_every),
+                  save_checkpoint, cosine_with_warmup, set_lr,
+                  train_one_run (takes backbone, recipe, run, batch_size —
+                  no TrainConfig wrapper), main. No validation here;
+                  see validator.py.
+validator.py      Standalone checkpoint validator CLI. run_validation
+                  (fp32, no autocast) + validate_checkpoint loader.
+                  Required flags: --checkpoint, --device, --batch-size,
+                  --num-workers, --prefetch-factor. No async machinery,
+                  no ambiguity scan, no dtype menu.
+smoke_test.py     Wiring sanity test on examples/ (device auto-detected;
+                  exercises run_validation but no scan)
 utils/
   image_io.py     open_rgb(path) - single entry point for opening images;
                   registers the JXL handler and enables truncated-image tolerance
@@ -283,11 +286,27 @@ import DatasetSpec`. No leading-dot relative imports.
 
 ```
 venv/bin/python src/smoke_test.py
-venv/bin/python src/train.py  [--epochs N] [--batch-size N] [--num-workers N] [--prefetch-factor N] [--seed N] [--invalidate-cache]
-venv/bin/python src/stats.py  [--num-workers N] [--input-size N] [--resize-size N] [--invalidate-cache]
+
+venv/bin/python src/train.py \
+    --device cuda --batch-size N --num-workers N --prefetch-factor N \
+    [--epochs N] [--seed N] [--resume PATH] [--invalidate-cache]
+
+venv/bin/python src/validator.py \
+    --checkpoint checkpoints/epoch_NNN.pt \
+    --device cuda --batch-size N --num-workers N --prefetch-factor N \
+    [--weights ema|raw] [--max-batches N]
+
+venv/bin/python src/stats.py \
+    --device cuda --num-workers N \
+    [--input-size N] [--resize-size N] [--invalidate-cache]
 ```
 
-`train.py`'s recipe defaults (epochs, batch_size) come from
+`--device`, `--batch-size`, `--num-workers`, and `--prefetch-factor`
+are **required** on every CLI that builds a DataLoader. There are no
+hardware defaults baked into the library — pick values for the
+machine the command is running on.
+
+`train.py`'s recipe defaults (epochs etc.) come from
 `config.DEFAULT_BACKBONE.train_defaults` and show up in `--help` with
 the chosen backbone's values. To switch arch, edit the import +
 instantiation in `config.py`; there is no `--backbone` CLI flag.
@@ -298,6 +317,10 @@ result. Useful for pre-computing stats before a training run so the
 first epoch isn't waiting on the scan. Pass `--input-size`/
 `--resize-size` to compute stats at a different size - they'll land
 in a separately keyed cache file.
+
+`validator.py` is independent of `train.py` — point it at any
+`epoch_NNN.pt` and it runs one fp32 validation pass on the device
+you specify. No async, no IPC, no second-GPU assumption.
 
 ## User's coding preferences (firm)
 
@@ -318,10 +341,13 @@ Strict rules - apply without asking:
    required kwargs, not defaulted to ImageNet constants.
 10. **No extension whitelists** when scanning files unless we have a concrete
     reason - let PIL fail at decode time.
-11. **Centralize cross-cutting state in `config.py`**: device, paths,
-    DATASETS, default backbone. Don't redeclare `torch.device(...)` in
-    modules. Arch-coupled knobs (input_size, batch_size, etc.) belong
-    on the Backbone class, not in config.
+11. **Cross-cutting static state lives in `config.py`** (DATASETS,
+    DEFAULT_BACKBONE, stats sampling fraction/seed) or `constants.py`
+    (paths, ROTATIONS, LOG_STEP). **Hardware/runtime knobs (device,
+    num_workers, prefetch_factor, batch_size) do NOT live in either —
+    they come from the CLI on every entry point** so the library
+    stays machine-agnostic. Arch-coupled knobs (input_size,
+    resize_size, etc.) belong on the Backbone class.
 12. **`help=` on every argparse argument.**
 13. **Use `model.train(False)`** for inference mode (the security hook flags
     the other spelling).
@@ -410,9 +436,14 @@ Strict rules - apply without asking:
 
 ## Gotchas
 
-- The user has **two GPUs** but only the 5060 Ti is in use; it drives both
-  the desktop and training. The 1660 SUPER sits idle in the box.
+- The user has **two GPUs** physically (5060 Ti + 1660 SUPER) but the
+  codebase no longer assumes anything about that — there's no
+  `cuda:1` defaulting anywhere. Pass `--device` explicitly. The 1660
+  SUPER sits idle.
 - **`ImageList` was renamed to `ImageLoader`** - don't go back.
+- **`async_validator.py` was renamed to `validator.py`** and the
+  AsyncValidator/scan_dataset/AmbiguityScan* classes are gone. If
+  something asks for them, it's stale.
 - The cache directory is `cache/` (no leading dot). Earlier it was `.cache/`
   which collided with the gitignore Python template.
 - `pillow-jxl-plugin` registers on import as a side effect. That import now
@@ -473,9 +504,10 @@ Strict rules - apply without asking:
   The earlier `cache/stats_*.json` (size-less filenames) won't match
   the new `stats_<name>_<resize>x<input>.json` and will be recomputed.
 - ONNX export is planned but deliberately deferred.
-- Ambiguity-validation set (DTD textures, COCO circular subjects, Perlin
-  noise) is not yet built. Needed for tuning the 4-rotation consistency
-  threshold.
+- The ambiguity scan (4-rotation consistency walk over the val set,
+  writing `cache/ambiguity.json`) was removed when the validator was
+  decoupled from training. Reintroduce as its own file once there's
+  a trained checkpoint to actually scan with.
 - Temperature scaling / `calibrate.py` were removed because no
   checkpoint exists to fit T against. Reintroduce when there's a real
   trained model and ECE is worth measuring.
