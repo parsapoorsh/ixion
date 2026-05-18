@@ -63,7 +63,11 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
-def cosine_with_warmup(step: int, total_steps: int, warmup: int) -> float:
+def cosine_with_warmup(
+    step: int,
+    total_steps: int,
+    warmup: int,
+) -> float:
     if step < warmup:
         return step / max(1, warmup)
     t = (step - warmup) / max(1, total_steps - warmup)
@@ -163,7 +167,11 @@ def train_one_run(
             imgs = imgs.to(run.device, non_blocking=True)
             labels = labels.to(run.device, non_blocking=True)
 
-            scale = cosine_with_warmup(global_step, total_steps, warmup_steps)
+            scale = cosine_with_warmup(
+                global_step,
+                total_steps,
+                warmup_steps,
+            )
 
             # set lr
             for group in optimizer.param_groups:
