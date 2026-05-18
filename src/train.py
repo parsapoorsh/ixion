@@ -173,6 +173,8 @@ def train_one_run(
         running_loss = 0.0
         running_correct = 0
         running_seen = 0
+        running_grad_norm = 0.0
+        running_grad_steps = 0
 
         pbar = tqdm(
             train_loader,
@@ -205,26 +207,34 @@ def train_one_run(
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                grad_clip,
+            )
             optimizer.step()
             ema.update(model)
 
             running_loss += loss.item() * imgs.size(0)
             running_correct += (logits.argmax(dim=1) == labels).sum().item()
             running_seen += imgs.size(0)
+            running_grad_norm += grad_norm.item()
+            running_grad_steps += 1
 
             lr_now = optimizer.param_groups[0]["lr"]
             acc = running_correct / max(1, running_seen)
             avg_loss = running_loss / max(1, running_seen)
+            avg_grad_norm = running_grad_norm / max(1, running_grad_steps)
             pbar.set_postfix(
                 loss=f"{avg_loss:.4f}",
                 acc=f"{acc:.3f}",
                 lr=f"{lr_now:.2e}",
+                gn=f"{avg_grad_norm:.2f}",
             )
             if global_step % run.log_every == 0:
                 logger.info(
-                    "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e",
-                    epoch, global_step, total_steps, avg_loss, acc, lr_now,
+                    "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e grad_norm=%.2f",
+                    epoch, global_step, total_steps,
+                    avg_loss, acc, lr_now, avg_grad_norm,
                 )
             global_step += 1
 
