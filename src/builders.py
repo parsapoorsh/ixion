@@ -23,7 +23,6 @@ def build_train_transform(
         T.RandomGrayscale(p=0.05),
         T.ToTensor(),
         T.Normalize(mean, std),
-        T.RandomErasing(p=0.25, scale=(0.02, 0.15)),
     ])
 
 
