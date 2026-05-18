@@ -12,8 +12,11 @@ val splits, run each image through all 4 rotations, and write the
 paths of images the model finds non-confident (≤3 of 4 views agree)
 to ``cache/ambiguity.json``, sorted most-ambiguous first.
 
-Dtype is fp16, not bf16 — the second card on this machine is a 1660
-SUPER (Turing) which has no BF16 tensor cores.
+Forward passes run in fp32. The second card on this machine is a 1660
+SUPER (Turing), which has no BF16 tensor cores; fp16 autocast overflows
+once the trained model's logits grow, producing NaN losses and
+degenerate argmax-=-0 predictions. The validator runs async and only
+once per epoch, so the throughput cost of fp32 is fine.
 """
 
 from __future__ import annotations
@@ -137,7 +140,6 @@ def scan_dataset(
     model: nn.Module,
     dataset_specs: list[DatasetSpec],
     device: torch.device,
-    dtype: torch.dtype,
     batch_size: int,
     recipe_input_size: int,
     recipe_resize_size: int,
@@ -192,8 +194,7 @@ def scan_dataset(
                 )
             b = views.size(0)
             views = views.to(device, non_blocking=True).view(b * n, *views.shape[2:])
-            with torch.autocast(device_type=device.type, dtype=dtype):
-                logits = model(views)
+            logits = model(views)
             probs = logits.float().softmax(dim=-1).view(b, n, n)
 
             implied = (probs.argmax(dim=-1) - r_arange) % n  # (b, n)
@@ -237,7 +238,6 @@ def run_validation(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
-    dtype: torch.dtype,
 ) -> tuple[float, float, list[float]]:
     model.train(False)
     correct = torch.zeros(constants.NUM_CLASSES, device=device)
@@ -250,9 +250,8 @@ def run_validation(
     for batch_idx, (imgs, labels) in enumerate(loader):
         imgs = imgs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        with torch.autocast(device_type=device.type, dtype=dtype):
-            logits = model(imgs)
-            loss = loss_fn(logits, labels)
+        logits = model(imgs)
+        loss = loss_fn(logits, labels)
         preds = logits.argmax(dim=1)
         for c in range(constants.NUM_CLASSES):
             mask = labels == c
@@ -327,7 +326,6 @@ def validator_worker(
                 model,
                 val_loader,
                 device=device,
-                dtype=torch.float16,
             )
             dt = time.monotonic() - t0
             log.info(
@@ -349,7 +347,6 @@ def validator_worker(
                 model,
                 dataset_specs=dataset_specs,
                 device=device,
-                dtype=torch.float16,
                 batch_size=SCAN_BATCH_SIZE,
                 recipe_input_size=recipe.input_size,
                 recipe_resize_size=recipe.resize_size,
