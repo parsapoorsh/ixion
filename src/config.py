@@ -2,13 +2,9 @@
 
 from pathlib import Path
 
-import torch
-
 from datasets import DatasetSpec
 from models.backbones import EfficientNetB0
 
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Architecture used by train. Single source of truth — to switch
 # arch, swap the class here.

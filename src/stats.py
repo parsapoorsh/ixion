@@ -1,15 +1,14 @@
-"""Per-dataset channel mean/std — computed once on GPU, cached to disk.
+"""Per-dataset channel mean/std — computed once on the chosen device, cached to disk.
 
 When a DatasetSpec leaves mean/std as None, we sample
 ``config.STATS_SAMPLE_FRACTION`` of the train split (sorted by path for
 on-disk locality), wrap it in an ``ImageLoader`` with the shared
 ``build_eval_preprocess`` pipeline, decode in parallel through a DataLoader,
-reduce per-batch sum and sum-of-squares on ``config.DEVICE`` in float32
-(consumer GPUs are ~1/64 speed for float64), and accumulate on the CPU in
-float64. Result lands in ``cache/stats_<name>_<resize>x<input>.json``. A spec
-that *does* carry explicit mean/std (e.g. pinned to ImageNet) bypasses all of
-this and is returned as-is. Runnable as a CLI to pre-warm the cache before a
-training run.
+reduce per-batch sum and sum-of-squares on the device in float32, and
+accumulate on the CPU in float64. Result lands in
+``cache/stats_<name>_<resize>x<input>.json``. A spec that *does* carry
+explicit mean/std (e.g. pinned to ImageNet) bypasses all of this and is
+returned as-is. Runnable as a CLI to pre-warm the cache before a training run.
 """
 
 from __future__ import annotations
@@ -61,7 +60,8 @@ def get_stats(
     spec: DatasetSpec,
     input_size: int,
     resize_size: int,
-    num_workers: int = constants.NUM_WORKERS,
+    num_workers: int,
+    device: torch.device,
 ) -> ChannelStats:
     """Return (mean, std) for the spec, computing+caching on first miss.
 
@@ -92,7 +92,7 @@ def get_stats(
     logger.info(
         "computing %s stats over %d sampled images (%.1f%% of %d) on %s at %dx%d...",
         spec.name, len(sample), 100 * config.STATS_SAMPLE_FRACTION,
-        len(files), config.DEVICE, resize_size, input_size,
+        len(files), device, resize_size, input_size,
     )
 
     t0 = time.monotonic()
@@ -101,6 +101,7 @@ def get_stats(
         input_size=input_size,
         resize_size=resize_size,
         num_workers=num_workers,
+        device=device,
     )
     dt = time.monotonic() - t0
     logger.info(
@@ -141,22 +142,23 @@ def compute_stats(
     files: Sequence[Path],
     input_size: int,
     resize_size: int,
-    num_workers: int = constants.NUM_WORKERS,
+    num_workers: int,
+    device: torch.device,
     batch_size: int = 64,
 ) -> ChannelStats:
-    """Per-channel mean/std on a sample, decoded in workers and reduced on GPU.
+    """Per-channel mean/std on a sample, decoded in workers and reduced on device.
 
-    Per batch we compute sum and sum-of-squares on ``config.DEVICE`` in
-    float32 (consumer GPUs are slow at float64), then accumulate those small
-    tensors on the CPU in float64. Per-batch precision stays tight because
-    each partial is bounded by the batch's pixel count.
+    Per batch we compute sum and sum-of-squares on the device in float32,
+    then accumulate those small tensors on the CPU in float64. Per-batch
+    precision stays tight because each partial is bounded by the batch's
+    pixel count.
     """
     transform = build_eval_preprocess(input_size=input_size, resize_size=resize_size)
     loader = DataLoader(
         datasets_mod.ImageLoader(files, transform=transform),
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=config.DEVICE.type == "cuda",
+        pin_memory=device.type == "cuda",
         persistent_workers=num_workers > 0,
         prefetch_factor=4 if num_workers > 0 else None,
     )
@@ -167,7 +169,7 @@ def compute_stats(
 
     with tqdm(total=len(files), desc="stats", unit="img") as pbar:
         for batch in loader:
-            batch = batch.to(config.DEVICE, non_blocking=True)
+            batch = batch.to(device, non_blocking=True)
 
             b, _, h, w = batch.shape
             sum_c += batch.sum(dim=(0, 2, 3)).double().cpu()
@@ -197,9 +199,15 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
+        "--device",
+        type=str,
+        required=True,
+        help="torch device string (e.g. 'cuda', 'cuda:0', 'cpu')",
+    )
+    p.add_argument(
         "--num-workers",
         type=int,
-        default=constants.NUM_WORKERS,
+        required=True,
         help="DataLoader worker processes used for image decoding",
     )
     p.add_argument(
@@ -224,12 +232,14 @@ def main() -> None:
     if args.invalidate_cache:
         clear_cache()
 
+    device = torch.device(args.device)
     for spec in config.DATASETS:
         result = get_stats(
             spec,
             input_size=args.input_size,
             resize_size=args.resize_size,
             num_workers=args.num_workers,
+            device=device,
         )
         logger.info(
             "%s: mean=%s std=%s",

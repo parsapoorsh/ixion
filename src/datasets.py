@@ -119,6 +119,8 @@ def build_train_dataset(
     specs: Sequence[DatasetSpec],
     input_size: int,
     resize_size: int,
+    num_workers: int,
+    device: torch.device,
 ) -> ConcatDataset:
     """One RotationPairDataset per source dataset, normalized with that source's
     own mean/std, then concatenated. Each image is normalized by the stats it
@@ -132,6 +134,8 @@ def build_train_dataset(
             spec,
             input_size=input_size,
             resize_size=resize_size,
+            num_workers=num_workers,
+            device=device,
         )
         transform = build_train_transform(
             mean=channel_stats.mean,
@@ -147,6 +151,8 @@ def build_val_dataset(
     specs: Sequence[DatasetSpec],
     input_size: int,
     resize_size: int,
+    num_workers: int,
+    device: torch.device,
 ) -> ConcatDataset:
     parts: list[RotationPairDataset] = []
     for spec in specs:
@@ -155,6 +161,8 @@ def build_val_dataset(
             spec,
             input_size=input_size,
             resize_size=resize_size,
+            num_workers=num_workers,
+            device=device,
         )
         transform = build_eval_transform(
             mean=channel_stats.mean,
