@@ -55,18 +55,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-VALIDATOR_WORKERS = 8
-VALIDATOR_PREFETCH = 6
+VALIDATOR_WORKERS = constants.NUM_WORKERS // 2
 SHUTDOWN_TIMEOUT_S = 30.0
 VALIDATION_LOG_EVERY = 50
 SCAN_LOG_EVERY = 50
+# Validator forward passes run in fp32 (Turing has no BF16; fp16 overflowed
+# once trained logits grew, producing NaN argmax→0 degenerate predictions).
+# fp32 roughly doubles activation memory vs the previous fp16 sizing, so
+# batches are halved from what fp16 allowed on the GTX 1660 SUPER (~5.6 GiB
+# usable). Reduce further if you swap to a heavier backbone (ConvNeXt-V2-
+# Tiny activations are ~2-3× EfficientNet-B0's).
+VALIDATION_BATCH_SIZE = 128
 # Per-image scan batch. Each image expands to 4 rotation views before the
-# forward pass, so this value × 4 is what actually hits the model. Sized
-# for the GTX 1660 SUPER's ~5.6 GiB usable VRAM at the 4 GiB target —
-# measured on EfficientNet-B0 at 224²: peak_reserved=3.92 GiB. Reduce if
-# you swap to a heavier backbone (ConvNeXt-V2-Tiny activations are
-# ~2-3× B0's).
-SCAN_BATCH_SIZE = 128
+# forward pass, so this value × 4 is what actually hits the model.
+SCAN_BATCH_SIZE = 64
 AMBIGUITY_OUTPUT_PATH = constants.INDEX_CACHE_DIR / "ambiguity.json"
 
 
@@ -181,7 +183,7 @@ def scan_dataset(
             num_workers=VALIDATOR_WORKERS,
             pin_memory=True,
             persistent_workers=False,
-            prefetch_factor=VALIDATOR_PREFETCH,
+            prefetch_factor=constants.PREFETCH_FACTOR,
         )
         logger.info("scanning %s (%d images)", spec.name, len(ds))
         n_batches = len(loader)
@@ -299,7 +301,7 @@ def validator_worker(
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=recipe.batch_size,
+        batch_size=VALIDATION_BATCH_SIZE,
         shuffle=False,
         num_workers=VALIDATOR_WORKERS,
         pin_memory=True,
