@@ -110,11 +110,10 @@ def build_train_loader(run: RunConfig) -> DataLoader:
 def train_one_run(
     run: RunConfig,
     epochs: int = 100,
-    lr: float = 0.05,
-    momentum: float = 0.9,
-    weight_decay: float = 1e-4,
+    lr: float = 1e-3,
+    weight_decay: float = 0.05,
     label_smoothing: float = 0.1,
-    warmup_epochs: int = 10,
+    warmup_epochs: int = 5,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
     resume_from: Path | None = None,
@@ -127,12 +126,11 @@ def train_one_run(
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
     ema = ModelEMA(model, decay=ema_decay)
 
-    optimizer = torch.optim.SGD(
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
-        momentum=momentum,
+        betas=(0.9, 0.999),
         weight_decay=weight_decay,
-        nesterov=True,
     )
     loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
