@@ -33,23 +33,27 @@ def run_validation(
     device: torch.device,
     max_batches: int | None = None,
 ) -> tuple[float, float, list[float]]:
+    """Returns (mean loss, overall accuracy, per-class accuracy).
+
+    per_class is length 2: index 0 = rotated views, index 1 = upright views.
+    """
     model.train(False)
-    correct = torch.zeros(constants.NUM_CLASSES, device=device)
-    seen = torch.zeros(constants.NUM_CLASSES, device=device)
+    correct = torch.zeros(2, device=device)
+    seen = torch.zeros(2, device=device)
     total_loss = 0.0
     total_n = 0
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.BCEWithLogitsLoss()
     n_batches = len(loader) if max_batches is None else min(len(loader), max_batches)
 
     for batch_idx, (imgs, labels) in enumerate(loader):
         if max_batches is not None and batch_idx >= max_batches:
             break
         imgs = imgs.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True).float()
         logits = model(imgs)
         loss = loss_fn(logits, labels)
-        preds = logits.argmax(dim=1)
-        for c in range(constants.NUM_CLASSES):
+        preds = (logits > 0).float()
+        for c in range(2):
             mask = labels == c
             seen[c] += mask.sum()
             correct[c] += (preds[mask] == c).sum()
