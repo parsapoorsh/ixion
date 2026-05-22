@@ -40,7 +40,7 @@ def main() -> None:
     logger.info("model params = %.2f M", n_params)
 
     eg_dir = constants.PROJECT_ROOT / "examples"
-    sample_files = sorted(eg_dir.glob("*"))
+    sample_files = sorted(p for p in eg_dir.glob("*") if p.is_file())
     assert sample_files, f"no example images in {eg_dir}"
 
     spec = config.DATASETS[0]
