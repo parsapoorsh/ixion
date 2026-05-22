@@ -5,10 +5,10 @@ Image opening is delegated to image_io.open_rgb so the JXL handler and the
 truncated-image tolerance are registered in exactly one place.
 
 Each base image yields four training samples - one per rotation in
-{0, 90, 180, 270}. The sample index is (image_idx, rotation_idx), so each
-epoch sees a perfectly class-balanced view of the data with full coverage of
-every rotation. Filesystem scanning lives in utils.index; transform recipes
-live in builders.py.
+{0, 90, 180, 270}. The sample index is (image_idx, rotation_idx). The label
+is binary: 1.0 when the view is upright (rotation 0), else 0.0 - so each
+base image contributes one positive and three negatives. Filesystem scanning
+lives in utils.index; transform recipes live in builders.py.
 """
 
 from __future__ import annotations
@@ -81,10 +81,11 @@ class ImageLoader(Dataset):
 
 
 class RotationPairDataset(Dataset):
-    """Wraps a base image source so each item is (image, rotation_label).
+    """Wraps a base image source so each item is (image, is_upright_label).
 
     For a base of N images, len = 4 * N. Sample i decomposes to
-    img_idx = i // 4 and rot_idx = i % 4. Rotation label is rot_idx.
+    img_idx = i // 4 and rot_idx = i % 4. The label is 1.0 when rot_idx == 0
+    (upright), else 0.0.
     """
 
     def __init__(self, base: ImageLoader, transform: Callable) -> None:
@@ -92,10 +93,10 @@ class RotationPairDataset(Dataset):
         self.transform = transform
 
     def __len__(self) -> int:
-        return len(self.base) * constants.NUM_CLASSES
+        return len(self.base) * constants.NUM_ROTATIONS
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        img_idx, rot_idx = divmod(idx, constants.NUM_CLASSES)
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, float]:
+        img_idx, rot_idx = divmod(idx, constants.NUM_ROTATIONS)
         n = len(self.base)
         for offset in range(n):
             probe = (img_idx + offset) % n
@@ -112,7 +113,7 @@ class RotationPairDataset(Dataset):
         tensor = self.transform(img)
         if rot_idx != 0:
             tensor = TF.rotate(tensor, constants.ROTATIONS[rot_idx], expand=True)
-        return tensor, rot_idx
+        return tensor, 1.0 if rot_idx == 0 else 0.0
 
 
 def build_train_dataset(
