@@ -1,6 +1,7 @@
 """GradCAM visualiser for the upright detector.
 
-Shows which image regions drive the upright (P(upright)) prediction.
+Shows the image at all 4 rotations; for each, displays the model's
+P(upright) and a GradCAM heatmap of the upright logit.
 Target layer: backbone.conv_head (last 1x1 conv before global pool,
 320->1280 channels, spatial resolution ~7x7 for 224x224 input).
 
@@ -116,26 +117,42 @@ def visualise(
     title: str,
     out_path: Path,
 ) -> None:
-    display = T.Compose([
+    crop = T.Compose([
         T.Resize(constants.RESIZE_SIZE),
         T.CenterCrop(constants.INPUT_SIZE),
     ])(pil_img)
 
+    probs: list[float] = []
+    cams: list[np.ndarray] = []
+    displays: list[Image.Image] = []
+
     with gpu_lock:
-        with torch.no_grad():
-            tensor = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
-            prob = float(model(tensor).sigmoid().item())
+        for angle in constants.ROTATIONS:
+            rotated = crop.rotate(angle) if angle != 0 else crop
+            displays.append(rotated)
 
-        t = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
-        cam = compute_gradcam(model, t)
+            with torch.no_grad():
+                tensor = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
+                prob = float(model(tensor).sigmoid().item())
+            probs.append(prob)
 
-    img_overlay = make_overlay(display, cam)
+            t = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
+            cams.append(compute_gradcam(model, t))
 
-    fig = Figure(figsize=(6, 6))
-    ax = fig.subplots()
-    ax.imshow(img_overlay)
-    ax.set_title(f"P(upright) = {prob:.1%}", fontsize=11)
-    ax.axis("off")
+    pred = int(np.argmax(probs))
+
+    fig = Figure(figsize=(10, 10))
+    axes = fig.subplots(2, 2)
+
+    for idx, (angle, cam, prob, disp) in enumerate(
+        zip(constants.ROTATIONS, cams, probs, displays)
+    ):
+        img_overlay = make_overlay(disp, cam)
+        ax = axes[idx // 2, idx % 2]
+        marker = " *" if idx == pred else ""
+        ax.imshow(img_overlay)
+        ax.set_title(f"{angle}°{marker}  P(upright)={prob:.1%}", fontsize=11)
+        ax.axis("off")
 
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
