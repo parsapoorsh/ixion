@@ -112,7 +112,6 @@ def train_one_run(
     epochs: int = 100,
     lr: float = 1e-3,
     weight_decay: float = 0.05,
-    label_smoothing: float = 0.1,
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
@@ -132,7 +131,11 @@ def train_one_run(
         betas=(0.9, 0.999),
         weight_decay=weight_decay,
     )
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+    # Each base image yields 1 upright + 3 rotated views, so the positive
+    # (upright) class is outnumbered 1:3 - pos_weight rebalances the loss.
+    loss_fn = nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor(3.0, device=run.device),
+    )
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * epochs
@@ -187,7 +190,7 @@ def train_one_run(
                 non_blocking=True,
                 memory_format=torch.channels_last,
             )
-            labels = labels.to(run.device, non_blocking=True)
+            labels = labels.to(run.device, non_blocking=True).float()
 
             scale = cosine_with_warmup(
                 global_step,
@@ -212,8 +215,9 @@ def train_one_run(
             optimizer.step()
             ema.update(model)
 
+            preds = (logits > 0).float()
             running_loss += loss.item() * imgs.size(0)
-            running_correct += (logits.argmax(dim=1) == labels).sum().item()
+            running_correct += (preds == labels).sum().item()
             running_seen += imgs.size(0)
             running_grad_norm += grad_norm.item()
             running_grad_steps += 1
