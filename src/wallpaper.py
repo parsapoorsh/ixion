@@ -83,7 +83,6 @@ def denorm(img: torch.Tensor, mean: tuple, std: tuple) -> np.ndarray:
 
 def generate(
     model: RotationModel,
-    target_class: int,
     h: int,
     w: int,
     mean: tuple,
@@ -114,11 +113,11 @@ def generate(
         if jitter > 0:
             crop = random_jitter(crop, jitter)
         logits = model(crop)
-        loss = -logits[0, target_class]
+        loss = -logits[0]
         loss.backward()
         opt.step()
 
-        prob = logits.detach().softmax(dim=1)[0, target_class].item()
+        prob = logits.detach().sigmoid()[0].item()
         bar.set_postfix(prob=f"{prob:.1%}")
 
     with torch.no_grad():
@@ -134,7 +133,6 @@ def main() -> None:
     parser.add_argument("--device", type=str, required=True)
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
-    parser.add_argument("--target-class", type=int, default=0, choices=range(constants.NUM_CLASSES))
     parser.add_argument("--steps", type=int, default=2048)
     parser.add_argument("--lr", type=float, default=0.05)
     parser.add_argument(
@@ -157,7 +155,6 @@ def main() -> None:
 
     img_arr = generate(
         model=model,
-        target_class=args.target_class,
         h=args.height,
         w=args.width,
         mean=IMAGENET_MEAN,

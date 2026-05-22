@@ -1,6 +1,6 @@
-"""GradCAM visualiser for the rotation model.
+"""GradCAM visualiser for the upright detector.
 
-Shows which image regions drive each rotation-class prediction.
+Shows which image regions drive the upright (P(upright)) prediction.
 Target layer: backbone.conv_head (last 1x1 conv before global pool,
 320->1280 channels, spatial resolution ~7x7 for 224x224 input).
 
@@ -32,7 +32,6 @@ import constants
 from models.rotation import RotationModel
 from utils.image_io import open_rgb
 
-LABELS = ["0°", "90°", "180°", "270°"]
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -62,9 +61,8 @@ def load_model(checkpoint: Path, device: torch.device) -> RotationModel:
 def compute_gradcam(
     model: RotationModel,
     tensor: torch.Tensor,
-    target_class: int,
 ) -> np.ndarray:
-    """Return a (H, W) heatmap in [0, 1] for the given class."""
+    """Return a (H, W) heatmap in [0, 1] for the upright logit."""
     target_layer: nn.Module = model.backbone.conv_head  # type: ignore[assignment]
 
     saved_features: list[torch.Tensor] = []
@@ -81,7 +79,7 @@ def compute_gradcam(
 
     output = model(tensor)
     model.zero_grad()
-    output[0, target_class].backward()
+    output[0].backward()
 
     fh.remove()
     bh.remove()
@@ -126,25 +124,18 @@ def visualise(
     with gpu_lock:
         with torch.no_grad():
             tensor = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
-            probs = model(tensor).softmax(dim=1)[0].cpu().numpy()
+            prob = float(model(tensor).sigmoid().item())
 
-        cams: list[np.ndarray] = []
-        for cls_idx in range(constants.NUM_CLASSES):
-            t = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
-            cams.append(compute_gradcam(model, t, cls_idx))
+        t = preprocess(pil_img).unsqueeze(0).to(device)  # type: ignore[union-attr]
+        cam = compute_gradcam(model, t)
 
-    pred = int(probs.argmax())
+    img_overlay = make_overlay(display, cam)
 
-    fig = Figure(figsize=(10, 10))
-    axes = fig.subplots(2, 2)
-
-    for cls_idx, cam in enumerate(cams):
-        img_overlay = make_overlay(display, cam)
-        ax = axes[cls_idx // 2, cls_idx % 2]
-        marker = " *" if cls_idx == pred else ""
-        ax.imshow(img_overlay)
-        ax.set_title(f"{LABELS[cls_idx]}{marker}  {probs[cls_idx]:.1%}", fontsize=11)
-        ax.axis("off")
+    fig = Figure(figsize=(6, 6))
+    ax = fig.subplots()
+    ax.imshow(img_overlay)
+    ax.set_title(f"P(upright) = {prob:.1%}", fontsize=11)
+    ax.axis("off")
 
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
