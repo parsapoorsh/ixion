@@ -1,8 +1,9 @@
-"""Rotation model: EfficientNet-B0 backbone + 4-class head.
+"""Rotation model: EfficientNet-B0 backbone + binary upright head.
 
-Trained from scratch (no ImageNet weights). The backbone is built via
-timm; the head is AdaptiveAvgPool (already inside timm with
-``global_pool='avg'``) → LayerNorm → Dropout → Linear.
+A single output neuron predicts whether the image is upright (0°). Trained
+from scratch (no ImageNet weights). The backbone is built via timm; the head
+is AdaptiveAvgPool (already inside timm with ``global_pool='avg'``) →
+LayerNorm → Dropout → Linear.
 """
 
 from __future__ import annotations
@@ -10,8 +11,6 @@ from __future__ import annotations
 import timm
 import torch
 from torch import nn
-
-import constants
 
 
 class RotationModel(nn.Module):
@@ -31,9 +30,9 @@ class RotationModel(nn.Module):
         self.head = nn.Sequential(
             nn.LayerNorm(feat_dim),
             nn.Dropout(drop_rate),
-            nn.Linear(feat_dim, constants.NUM_CLASSES),
+            nn.Linear(feat_dim, 1),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feats = self.backbone(x)
-        return self.head(feats)
+        return self.head(feats).squeeze(-1)

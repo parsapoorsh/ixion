@@ -1,6 +1,6 @@
 """Model package.
 
-``RotationModel`` (backbone + 4-class head) lives in ``rotation.py``;
+``RotationModel`` (backbone + binary upright head) lives in ``rotation.py``;
 ``ModelEMA`` lives in ``ema.py``.
 """
 
