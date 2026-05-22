@@ -1,48 +1,27 @@
-"""Inference with 4-rotation consistency ambiguity check.
+"""Single-pass inference for the binary upright detector.
 
-The rotation task is equivariant: if we feed the same image rotated by r and the
-model predicts p, then the implied original rotation is (p - r) mod 4. For an
-unambiguous image, the implied rotation from all four views should agree. When
-they disagree, the image is genuinely ambiguous (texture, circle, symmetric
-content) and we abstain instead of forcing a confident wrong answer.
+The model has one output neuron. A single forward pass yields a logit;
+its sigmoid is the probability the image is upright (rotation 0°).
 
-Two confidence signals are returned. ``Prediction.confidence`` is the
-categorical bucket (confident/weak/ambiguous) derived from vote agreement
-and drives the abstention decision. ``Prediction.confidence_pct`` is the
-max of the rotation-equivariant posterior - for each candidate source
-rotation s, average the model's probability across views (view i's
-probability for source s is ``probs[i, (s + i) % 4]``), then take the max.
-The continuous score is strictly more informative than vote share and
-useful for ranking or downstream thresholding.
-
-Designed for batch processing - runs all four rotations through the model in a
-single forward pass on a (4, C, H, W) tensor.
+When that probability lands in an uncertain band (default 0.4-0.6) the
+image is treated as genuinely ambiguous (uniform texture, circle,
+symmetric content) and we abstain rather than force a yes/no answer.
 """
 
-from collections import Counter
 from dataclasses import dataclass
 
 import torch
 from PIL import Image
 from torch import nn
-from torchvision.transforms import functional as TF
 
-import constants
 from builders import build_eval_transform
 
 
 @dataclass
 class Prediction:
-    """Result of running the consistency-aware inference on one image."""
-    rotation: int | None         # 0/90/180/270, or None when ambiguous
-    confidence: str              # "confident" | "weak" | "ambiguous"
-    confidence_pct: float        # posterior probability of the winning rotation, in [0, 100]
-    votes: tuple[int, int, int, int]  # implied rotation from each view (degrees)
-    entropy: float               # mean softmax entropy across the 4 views
-
-
-def softmax_entropy(probs: torch.Tensor) -> torch.Tensor:
-    return -(probs * probs.clamp_min(1e-12).log()).sum(dim=-1)
+    """Result of running inference on one image."""
+    is_upright: bool | None      # True upright, False rotated, None when abstained
+    confidence_pct: float        # probability the image is upright, in [0, 100]
 
 
 @torch.no_grad()
@@ -54,6 +33,8 @@ def predict_image(
     std: tuple[float, float, float],
     input_size: int,
     resize_size: int,
+    abstain_low: float = 0.4,
+    abstain_high: float = 0.6,
 ) -> Prediction:
     transform = build_eval_transform(
         mean=mean,
@@ -61,52 +42,18 @@ def predict_image(
         input_size=input_size,
         resize_size=resize_size,
     )
-    views = torch.stack([
-        transform(TF.rotate(img, r, expand=True))
-        for r in constants.ROTATIONS
-    ])
-    views = views.to(device, non_blocking=True)
+    tensor = transform(img).unsqueeze(0).to(device, non_blocking=True)
 
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        logits = model(views)
-    probs = logits.float().softmax(dim=-1)
-    preds = probs.argmax(dim=-1)  # shape [4], values in {0,1,2,3}
+        logit = model(tensor)
+    prob = float(logit.float().sigmoid().item())
 
-    # Convert per-view prediction back to the implied source rotation index.
-    # If we rotated the image by r and the model says it's at p, then the
-    # source was at (p - r) mod 4 quarters.
-    implied = [
-        (int(preds[i].item()) - i) % constants.NUM_CLASSES
-        for i in range(constants.NUM_CLASSES)
-    ]
-    votes_deg = tuple(constants.ROTATIONS[v] for v in implied)
-
-    counts = Counter(implied)
-    top, top_count = counts.most_common(1)[0]
-    if top_count == constants.NUM_CLASSES:
-        conf = "confident"
-    elif top_count == constants.NUM_CLASSES - 1:
-        conf = "weak"
+    if abstain_low <= prob <= abstain_high:
+        is_upright = None
     else:
-        conf = "ambiguous"
+        is_upright = prob > 0.5
 
-    # Rotation-equivariant posterior: from view i, the model's probability for
-    # source rotation s is probs[i, (s + i) % 4]. Averaging across views gives
-    # a calibrated-ish posterior over the source rotation, and its maximum is
-    # the confidence we report. Strictly more informative than the 4-bucket
-    # vote share, and consistent with it (the argmax matches `top` in the
-    # confident case).
-    n = constants.NUM_CLASSES
-    posterior = torch.stack(
-        [probs[i].roll(-i, dims=0) for i in range(n)]
-    ).mean(dim=0)
-    confidence_pct = float(posterior.max().item()) * 100.0
-
-    mean_entropy = float(softmax_entropy(probs).mean().item())
     return Prediction(
-        rotation=constants.ROTATIONS[top] if conf != "ambiguous" else None,
-        confidence=conf,
-        confidence_pct=confidence_pct,
-        votes=votes_deg,
-        entropy=mean_entropy,
+        is_upright=is_upright,
+        confidence_pct=prob * 100.0,
     )
