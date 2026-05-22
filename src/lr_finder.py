@@ -31,7 +31,6 @@ def find_lr(
     lr_max: float = 10.0,
     momentum: float = 0.9,
     weight_decay: float = 1e-4,
-    label_smoothing: float = 0.1,
     smooth_beta: float = 0.05,
     divergence_factor: float = 4.0,
     out_path: Path = constants.CHECKPOINT_DIR / "lr_finder.png",
@@ -46,7 +45,7 @@ def find_lr(
         weight_decay=weight_decay,
         nesterov=True,
     )
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+    loss_fn = nn.BCEWithLogitsLoss()
 
     mult = (lr_max / lr_min) ** (1.0 / max(1, num_steps - 1))
     lrs: list[float] = []
@@ -66,7 +65,7 @@ def find_lr(
         if step >= num_steps:
             break
         imgs = imgs.to(run.device, non_blocking=True)
-        labels = labels.to(run.device, non_blocking=True)
+        labels = labels.to(run.device, non_blocking=True).float()
         lr_now = lr_min * (mult ** step)
         for group in optimizer.param_groups:
             group["lr"] = lr_now

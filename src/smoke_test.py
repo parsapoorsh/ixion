@@ -1,8 +1,8 @@
 """Wiring sanity check on the example images.
 
 Builds the model with random init (no training), runs a synthetic
-forward/backward through the training transforms, runs the 4-rotation
-consistency inference on the examples/ directory, and exercises the
+forward/backward through the training transforms, runs the single-pass
+upright inference on the examples/ directory, and exercises the
 validator code path in-process against the same examples folder.
 Catches import errors, shape bugs, JXL/PIL/transform issues, and
 obvious model-side problems before launching a real training run.
@@ -58,14 +58,17 @@ def main() -> None:
         resize_size=constants.RESIZE_SIZE,
     )
     batch = torch.stack(
-        [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_CLASSES]]
+        [train_tf(open_rgb(p)) for p in sample_files[:constants.NUM_ROTATIONS]]
     ).to(device)
-    labels = torch.tensor(range(constants.NUM_CLASSES), device=device)
+    labels = torch.tensor(
+        [1.0, 0.0] * (constants.NUM_ROTATIONS // 2),
+        device=device,
+    )
 
     model.train()
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         logits = model(batch)
-        loss = torch.nn.functional.cross_entropy(logits, labels)
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, labels)
     loss.backward()
     logger.info(
         "train forward/backward ok. loss=%.3f, logits shape=%s",
@@ -90,9 +93,8 @@ def main() -> None:
             resize_size=constants.RESIZE_SIZE,
         )
         logger.info(
-            "%-25s rot=%s conf=%-9s (%.1f%%) votes=%s entropy=%.3f",
-            p.name, pred.rotation, pred.confidence, pred.confidence_pct,
-            pred.votes, pred.entropy,
+            "%-25s upright=%-5s (%.1f%%)",
+            p.name, pred.is_upright, pred.confidence_pct,
         )
 
     eval_tf = build_eval_transform(
@@ -104,7 +106,7 @@ def main() -> None:
     val_ds = RotationPairDataset(ImageLoader(sample_files), eval_tf)
     val_loader = DataLoader(
         val_ds,
-        batch_size=min(constants.NUM_CLASSES * 2, len(val_ds)),
+        batch_size=min(constants.NUM_ROTATIONS * 2, len(val_ds)),
         shuffle=False,
         num_workers=0,
     )
