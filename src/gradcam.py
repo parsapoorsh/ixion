@@ -157,13 +157,7 @@ def visualise(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--device", default="cuda:1")
-    parser.add_argument("--images", type=Path, nargs="+", required=True)
-    parser.add_argument("--out-dir", type=Path, default=Path("gradcam_out"))
-    args = parser.parse_args()
+def main(args) -> None:
     args.images = [p for p in args.images if p.is_file()]
 
     device = torch.device(args.device)
@@ -186,4 +180,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    p = argparse.ArgumentParser()
+    p.add_argument("--checkpoint", type=Path, required=True)
+    p.add_argument("--device", default="cuda:1")
+    p.add_argument("--images", type=Path, nargs="+", required=True)
+    p.add_argument("--out-dir", type=Path, default=Path("gradcam_out"))
+    args = p.parse_args()
+
+    main(args)
