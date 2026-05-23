@@ -23,8 +23,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+import config
 import constants
-from builders import build_dataset
+from datasets import build_dataset
 from models import ModelEMA, RotationModel
 from utils.logsetup import setup_logging
 
@@ -232,6 +233,7 @@ def main(args) -> None:
 
     ds = build_dataset(
         split="train",
+        datasets=config.DATASETS,
         device=device,
         num_workers=args.num_workers,
         batch_size=args.batch_size,

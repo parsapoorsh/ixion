@@ -16,7 +16,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from PIL import UnidentifiedImageError
@@ -25,12 +26,14 @@ from torchvision.transforms import functional as TF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import Sequence
 
     from PIL import Image
 
 import constants
+from builders import build_eval_transform, build_train_transform, eval_preprocess
+from stats import compute_stats
 from utils.image_io import open_rgb
+from utils.index import index_files
 
 logger = logging.getLogger(__name__)
 
@@ -113,3 +116,43 @@ class RotationPairDataset(Dataset):
 
         prob = 1.0 if rot_idx == 0 else 0.0
         return tensor, prob
+
+
+def build_dataset(
+    split: Literal["train", "val"],
+    datasets: Sequence[DatasetSpec],
+    device: torch.device,
+    num_workers: int,
+    batch_size: int,
+    prefetch_factor: int,
+    invalidate_cache: bool = False,
+) -> RotationPairDataset:
+    roots = [
+        root
+        for ds in datasets
+        for root in (ds.train if split == "train" else ds.val)
+    ]
+    files = index_files(
+        name=split,
+        roots=roots,
+        cache_dir=constants.INDEX_CACHE_DIR,
+        invalidate_cache=invalidate_cache,
+    )
+
+    mean, std = compute_stats(
+        ImageLoader(files=files, transform=eval_preprocess),
+        device=device,
+        num_workers=num_workers,
+        batch_size=batch_size,
+        prefetch_factor=prefetch_factor,
+    )
+
+    transform = (
+        build_train_transform(mean=mean, std=std)
+        if split == "train"
+        else build_eval_transform(mean=mean, std=std)
+    )
+    return RotationPairDataset(
+        base=ImageLoader(files=files),
+        transform=transform,
+    )

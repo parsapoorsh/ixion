@@ -12,26 +12,22 @@ import sys
 from typing import TYPE_CHECKING
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from builders import eval_preprocess
-from datasets import ImageLoader
-
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from pathlib import Path
+    pass
 
 
 def compute_stats(
-    files: Sequence[Path],
+    dataset: Dataset,
     device: torch.device,
     num_workers: int,
     batch_size: int,
     prefetch_factor: int,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     stats_loader = DataLoader(
-        ImageLoader(files=files, transform=eval_preprocess),
+        dataset,
         batch_size=batch_size,
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,

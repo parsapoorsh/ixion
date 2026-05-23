@@ -17,8 +17,9 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+import config
 import constants
-from builders import build_dataset
+from datasets import build_dataset
 from models import RotationModel
 from utils.logsetup import setup_logging
 
@@ -108,6 +109,7 @@ def validate_checkpoint(
 
     val_ds = build_dataset(
         split="val",
+        datasets=config.DATASETS,
         device=device,
         num_workers=num_workers,
         batch_size=batch_size,
