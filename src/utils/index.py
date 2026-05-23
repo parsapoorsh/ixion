@@ -25,8 +25,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import constants
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -36,6 +34,7 @@ logger = logging.getLogger(__name__)
 def index_files(
     name: str,
     roots: Sequence[Path],
+    cache_dir: Path,
     invalidate_cache: bool = False,
 ) -> "PathList":
     """Recursively list every regular file under the given roots, cached on disk.
@@ -43,16 +42,16 @@ def index_files(
     No extension filter - the dataset directories are expected to contain only
     images, and PIL will raise at load time on anything it can't decode.
 
-    When ``invalidate_cache`` is true, every cached index under the cache
-    directory is deleted before scanning.
+    When ``invalidate_cache`` is true, every cached index under ``cache_dir``
+    is deleted before scanning.
     """
-    if invalidate_cache and constants.INDEX_CACHE_DIR.exists():
-        for f in constants.INDEX_CACHE_DIR.glob("index_*.json*"):
+    if invalidate_cache and cache_dir.exists():
+        for f in cache_dir.glob("index_*.json*"):
             f.unlink()
             logger.info("removed cached index %s", f.name)
 
-    constants.INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache = constants.INDEX_CACHE_DIR / f"index_{name}.json.xz"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache = cache_dir / f"index_{name}.json.xz"
     if cache.exists():
         with lzma.open(cache, "rt") as f:
             trie = json.load(f)
