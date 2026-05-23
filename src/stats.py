@@ -8,8 +8,10 @@ accumulate on the CPU in float64 to keep per-batch precision bounded.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -32,7 +34,13 @@ def compute_stats(
     num_workers: int,
     batch_size: int,
     prefetch_factor: int,
+    cache_path: Path | None = None,
+    invalidate_cache: bool = False,
 ) -> NormStats:
+    if cache_path is not None and cache_path.exists() and not invalidate_cache:
+        data = json.loads(cache_path.read_text())
+        return NormStats(mean=tuple(data["mean"]), std=tuple(data["std"]))  # type: ignore[arg-type]
+
     stats_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -66,7 +74,10 @@ def compute_stats(
     mean = sum_c / total_pixels
     variance = (sum_sq_c / total_pixels) - mean * mean
     std = variance.clamp_min(0).sqrt()
-    return NormStats(
-        mean=tuple(mean.tolist()),
-        std=tuple(std.tolist()),
+    stats = NormStats(
+        mean=tuple(mean.tolist()),  # type: ignore[arg-type]
+        std=tuple(std.tolist()),  # type: ignore[arg-type]
     )
+    if cache_path is not None:
+        cache_path.write_text(json.dumps({"mean": list(stats.mean), "std": list(stats.std)}))
+    return stats

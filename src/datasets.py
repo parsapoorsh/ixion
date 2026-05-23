@@ -139,6 +139,7 @@ def build_dataset(
     )
 
     if stats is None:
+        stats_cache = constants.INDEX_CACHE_DIR / f"stats_{split}.json"
         logging.info("computing dataset stats for %s split (%d files)", split, len(files))
         stats = compute_stats(
             ImageLoader(files=files, transform=eval_preprocess),
@@ -146,6 +147,8 @@ def build_dataset(
             num_workers=num_workers,
             batch_size=batch_size,
             prefetch_factor=prefetch_factor,
+            cache_path=stats_cache,
+            invalidate_cache=invalidate_cache,
         )
         logging.info("stats - mean: %s | std: %s", stats.mean, stats.std)
 
