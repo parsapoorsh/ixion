@@ -28,7 +28,7 @@ from torchvision import transforms as T
 
 import constants
 from models.rotation import RotationModel
-from stats import NormStats
+from stats import NormStats, load_stats_cache
 from utils.image_io import open_rgb
 
 
@@ -37,10 +37,16 @@ def load_model(
     device: torch.device,
 ) -> tuple[RotationModel, NormStats]:
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
-    if "stats" not in payload:
-        raise KeyError(f"checkpoint missing 'stats'; keys={list(payload)}")
-    raw_stats = payload["stats"]
-    stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))
+    if "stats" in payload:
+        raw_stats = payload["stats"]
+        stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))  # type: ignore[arg-type]
+    else:
+        cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
+        if not cache_file.exists():
+            raise FileNotFoundError(
+                f"checkpoint has no 'stats' and cache file not found: {cache_file}"
+            )
+        stats = load_stats_cache(cache_file)
     model = RotationModel()
     model.load_state_dict(payload["ema"])
     model.to(device)

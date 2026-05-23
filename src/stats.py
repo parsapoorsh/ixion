@@ -28,6 +28,15 @@ class NormStats:
     std: tuple[float, float, float]
 
 
+def load_stats_cache(path: Path) -> NormStats:
+    data = json.loads(path.read_text())
+    return NormStats(mean=tuple(data["mean"]), std=tuple(data["std"]))  # type: ignore[arg-type]
+
+
+def save_stats_cache(path: Path, stats: NormStats) -> None:
+    path.write_text(json.dumps({"mean": list(stats.mean), "std": list(stats.std)}))
+
+
 def compute_stats(
     dataset: Dataset,
     device: torch.device,
@@ -38,8 +47,7 @@ def compute_stats(
     invalidate_cache: bool = False,
 ) -> NormStats:
     if cache_path is not None and cache_path.exists() and not invalidate_cache:
-        data = json.loads(cache_path.read_text())
-        return NormStats(mean=tuple(data["mean"]), std=tuple(data["std"]))  # type: ignore[arg-type]
+        return load_stats_cache(cache_path)
 
     stats_loader = DataLoader(
         dataset,
@@ -79,5 +87,5 @@ def compute_stats(
         std=tuple(std.tolist()),  # type: ignore[arg-type]
     )
     if cache_path is not None:
-        cache_path.write_text(json.dumps({"mean": list(stats.mean), "std": list(stats.std)}))
+        save_stats_cache(cache_path, stats)
     return stats
