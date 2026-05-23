@@ -23,13 +23,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-import config
 import constants
-from builders import build_train_transform
-from datasets import ImageLoader, RotationPairDataset
+from builders import build_dataset
 from models import ModelEMA, RotationModel
-from stats import compute_stats
-from utils.index import index_files
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -229,44 +225,13 @@ def train(
     logger.info("done.")
 
 
-def build_train_ds(
-    device: torch.device,
-    num_workers: int,
-    batch_size: int,
-    prefetch_factor: int,
-    invalidate_cache: bool,
-) -> RotationPairDataset:
-    files = index_files(
-        name="train",
-        roots=[i for ds in config.DATASETS for i in ds.train],
-        cache_dir=constants.INDEX_CACHE_DIR,
-        invalidate_cache=invalidate_cache,
-    )
-
-    mean, std = compute_stats(
-        files,
-        device=device,
-        num_workers=num_workers,
-        batch_size=batch_size,
-        prefetch_factor=prefetch_factor,
-    )
-
-    ds = RotationPairDataset(
-        base=ImageLoader(files=files),
-        transform=build_train_transform(
-            mean=mean,
-            std=std,
-        )
-    )
-    return ds
-
-
 def main(args) -> None:
     setup_logging(constants.LOGS_DIR)
 
     device = torch.device(args.device)
 
-    ds = build_train_ds(
+    ds = build_dataset(
+        split="train",
         device=device,
         num_workers=args.num_workers,
         batch_size=args.batch_size,
