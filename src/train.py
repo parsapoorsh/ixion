@@ -128,11 +128,11 @@ def setup_model(
         betas=(0.9, 0.999),
         weight_decay=weight_decay,
     )
-    # Each base image yields 1 upright + 3 rotated views, so the positive
-    # (upright) class is outnumbered 1:3 - pos_weight rebalances the loss.
-    loss_fn = nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor(3.0, device=device),
-    )
+    # Inference picks the rotation with the highest upright logit (argmax
+    # over 4 views), so the absolute decision threshold doesn't matter -
+    # only the relative ranking. Skip pos_weight to avoid the flat-valley
+    # loss surface that caused per-class accuracy to oscillate.
+    loss_fn = nn.BCEWithLogitsLoss()
 
     start_epoch = 0
     if resume_from is not None:
