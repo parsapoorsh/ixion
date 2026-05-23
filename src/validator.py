@@ -110,10 +110,6 @@ def validate_checkpoint(
         stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))  # type: ignore[arg-type]
     else:
         cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
-        if not cache_file.exists():
-            raise FileNotFoundError(
-                f"checkpoint has no 'stats' and cache file not found: {cache_file}"
-            )
         stats = load_stats_cache(cache_file)
         logger.info("loaded stats from cache file %s", cache_file)
 

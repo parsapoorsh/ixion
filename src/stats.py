@@ -29,6 +29,8 @@ class NormStats:
 
 
 def load_stats_cache(path: Path) -> NormStats:
+    if not path.exists():
+        raise FileNotFoundError(f"stats cache not found: {path}")
     data = json.loads(path.read_text())
     return NormStats(mean=tuple(data["mean"]), std=tuple(data["std"]))  # type: ignore[arg-type]
 

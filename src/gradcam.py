@@ -42,10 +42,6 @@ def load_model(
         stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))  # type: ignore[arg-type]
     else:
         cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
-        if not cache_file.exists():
-            raise FileNotFoundError(
-                f"checkpoint has no 'stats' and cache file not found: {cache_file}"
-            )
         stats = load_stats_cache(cache_file)
     model = RotationModel()
     model.load_state_dict(payload["ema"])
