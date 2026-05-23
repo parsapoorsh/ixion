@@ -17,13 +17,6 @@ from torch import nn
 from builders import build_eval_transform
 
 
-@dataclass
-class Prediction:
-    """Result of running inference on one image."""
-    is_upright: bool | None      # True upright, False rotated, None when abstained
-    confidence_pct: float        # probability the image is upright, in [0, 100]
-
-
 @torch.no_grad()
 def predict_image(
     model: nn.Module,
@@ -33,9 +26,7 @@ def predict_image(
     std: tuple[float, float, float],
     input_size: int,
     resize_size: int,
-    abstain_low: float = 0.4,
-    abstain_high: float = 0.6,
-) -> Prediction:
+) -> float:
     transform = build_eval_transform(
         mean=mean,
         std=std,
@@ -48,12 +39,4 @@ def predict_image(
         logit = model(tensor)
     prob = float(logit.float().sigmoid().item())
 
-    if abstain_low <= prob <= abstain_high:
-        is_upright = None
-    else:
-        is_upright = prob > 0.5
-
-    return Prediction(
-        is_upright=is_upright,
-        confidence_pct=prob * 100.0,
-    )
+    return prob
