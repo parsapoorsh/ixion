@@ -110,7 +110,7 @@ def cosine_with_warmup(
 def setup_model(
     device: torch.device,
     seed: int,
-    lr: float = 1e-3,
+    lr: float = 3e-4,
     weight_decay: float = 0.05,
     ema_decay: float = 0.9999,
     resume_from: Path | None = None,
@@ -171,7 +171,7 @@ def train(
     seed: int,
     stats: NormStats,
     epochs: int = 20,
-    lr: float = 1e-3,
+    lr: float = 3e-4,
     weight_decay: float = 0.05,
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
