@@ -181,6 +181,75 @@ def visualise_grid(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
 
 
+def compute_stage_maps(
+    model: RotationModel,
+    tensor: torch.Tensor,
+) -> list[tuple[str, np.ndarray]]:
+    """Mean |activation| over channels for every EfficientNet stage.
+
+    Returns one (name, H×W heatmap) tuple per stage, ordered from input to
+    output: stem → blocks[0..6] → conv_head. Late stages have very small
+    spatial resolution (7×7) — the overlay's upsample handles that.
+    """
+    backbone = model.backbone
+    targets: list[tuple[str, nn.Module]] = [("stem", backbone.bn1)]  # type: ignore[arg-type]
+    for i, block in enumerate(backbone.blocks):  # type: ignore[union-attr]
+        targets.append((f"block{i}", block))
+    targets.append(("conv_head", backbone.conv_head))  # type: ignore[arg-type]
+
+    saved: dict[str, torch.Tensor] = {}
+
+    def _make_hook(name: str):
+        def _fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
+            saved[name] = out
+        return _fwd
+
+    handles = [layer.register_forward_hook(_make_hook(name)) for name, layer in targets]
+    with torch.no_grad():
+        model(tensor)
+    for h in handles:
+        h.remove()
+
+    out: list[tuple[str, np.ndarray]] = []
+    for name, _ in targets:
+        feat = saved[name].squeeze(0)              # (C, H, W)
+        act = feat.abs().mean(dim=0)               # (H, W)
+        act_np = act.cpu().float().numpy()
+        if act_np.max() > 0:
+            act_np /= act_np.max()
+        out.append((name, act_np))
+    return out
+
+
+def visualise_stages(
+    display: Image.Image,
+    stage_maps: list[tuple[str, np.ndarray]],
+    title: str,
+    out_path: Path,
+) -> None:
+    """3×3 grid showing how the activation pattern evolves across stages."""
+    n = len(stage_maps)
+    cols = 3
+    rows = (n + cols - 1) // cols
+
+    fig = Figure(figsize=(4 * cols, 4 * rows))
+    axes = fig.subplots(rows, cols)
+
+    for idx, (name, heat) in enumerate(stage_maps):
+        ax = axes[idx // cols, idx % cols]
+        overlay = make_overlay(display, heat, alpha=0.6, colormap="viridis")
+        ax.imshow(overlay)
+        ax.set_title(name, fontsize=10)
+        ax.axis("off")
+
+    for idx in range(n, rows * cols):
+        axes[idx // cols, idx % cols].axis("off")
+
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+
+
 def compute_rotations(
     model: RotationModel,
     pil_img: Image.Image,
@@ -259,6 +328,17 @@ def main(args) -> None:
             f"{img_path.name} — occlusion sensitivity",
             args.out_dir / f"{img_path.stem}_occlusion.png",
             colormap="inferno",
+        )
+
+        pred = int(np.argmax(probs))
+        pred_display = displays[pred]
+        pred_tensor = preprocess(pred_display).unsqueeze(0).to(device)  # type: ignore[union-attr]
+        stage_maps = compute_stage_maps(model, pred_tensor)
+        visualise_stages(
+            pred_display,
+            stage_maps,
+            f"{img_path.name} — per-stage activations @ {constants.ROTATIONS[pred]}°",
+            args.out_dir / f"{img_path.stem}_stages.png",
         )
 
 
