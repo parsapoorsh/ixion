@@ -307,11 +307,6 @@ def main() -> None:
         default=None,
         help="path to an epoch_NNN.pt checkpoint to resume from (model, ema, ema_step restored; optimizer re-warms)",
     )
-    p.add_argument(
-        "--find-lr",
-        action="store_true",
-        help="run an LR range test (~500 steps) and exit; writes checkpoints/lr_finder.png",
-    )
     args = p.parse_args()
 
     if args.invalidate_cache:
@@ -325,13 +320,6 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         seed=args.seed,
     )
-
-    if args.find_lr:
-        from lr_finder import find_lr
-        recommended = find_lr(run)
-        logger.info("recommended lr=%.2e", recommended)
-        print(f"recommended lr = {recommended:.3e}")
-        return
 
     train_one_run(run, resume_from=args.resume)
 
