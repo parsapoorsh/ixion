@@ -105,6 +105,69 @@ def make_overlay(
     return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
 
 
+def compute_guided_gradcam(
+    model: RotationModel,
+    tensor: torch.Tensor,
+) -> np.ndarray:
+    """Guided backprop gated by the GradCAM heatmap.
+
+    Produces a sharp, class-discriminative, edge-like map at full input
+    resolution — the classic 'guided GradCAM' visualisation. SiLU stand-in
+    for ReLU in the guided-BP gate: only pass gradient where the SiLU output
+    was positive AND the incoming gradient is positive.
+    """
+    cam = compute_gradcam(model, tensor.detach().clone())
+
+    silu_outputs: dict[int, torch.Tensor] = {}
+    handles: list[torch.utils.hooks.RemovableHandle] = []
+
+    def make_fwd(idx: int):
+        def fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
+            silu_outputs[idx] = out
+        return fwd
+
+    def make_bwd(idx: int):
+        def bwd(
+            _m: nn.Module,
+            _gin: object,
+            gout: tuple[torch.Tensor, ...],
+        ) -> tuple[torch.Tensor, ...]:
+            out = silu_outputs[idx]
+            new_grad = gout[0].clone()
+            new_grad[out <= 0] = 0
+            new_grad[new_grad < 0] = 0
+            return (new_grad,)
+        return bwd
+
+    silu_modules = [m for m in model.modules() if isinstance(m, nn.SiLU)]
+    for i, sm in enumerate(silu_modules):
+        handles.append(sm.register_forward_hook(make_fwd(i)))
+        handles.append(sm.register_full_backward_hook(make_bwd(i)))  # type: ignore[arg-type]
+
+    x = tensor.detach().clone().requires_grad_(True)
+    output = model(x)
+    model.zero_grad()
+    output[0].backward()
+
+    for h in handles:
+        h.remove()
+
+    grad = x.grad[0].abs().sum(dim=0)              # type: ignore[union-attr]  # (H, W)
+    grad_np = grad.cpu().detach().float().numpy()
+
+    h_in, w_in = grad_np.shape
+    cam_up = np.array(
+        Image.fromarray((cam * 255).astype(np.uint8))
+        .resize((w_in, h_in), Image.Resampling.BICUBIC),
+    ).astype(np.float32) / 255.0
+
+    guided = grad_np * cam_up
+    p99 = float(np.percentile(guided, 99))
+    if p99 > 0:
+        guided = np.clip(guided / p99, 0.0, 1.0)
+    return guided
+
+
 def compute_occlusion(
     model: RotationModel,
     tensor: torch.Tensor,
@@ -327,6 +390,19 @@ def main(args) -> None:
             occlusions,
             f"{img_path.name} — occlusion sensitivity",
             args.out_dir / f"{img_path.stem}_occlusion.png",
+            colormap="inferno",
+        )
+
+        guided_cams = [
+            compute_guided_gradcam(model, preprocess(disp).unsqueeze(0).to(device))  # type: ignore[union-attr]
+            for disp in displays
+        ]
+        visualise_grid(
+            displays,
+            probs,
+            guided_cams,
+            f"{img_path.name} — guided GradCAM",
+            args.out_dir / f"{img_path.stem}_guidedcam.png",
             colormap="inferno",
         )
 
