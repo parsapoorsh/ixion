@@ -12,6 +12,7 @@ knobs. Validation is a separate process - see ``validator.py``.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import math
 import sys
@@ -31,6 +32,40 @@ from stats import NormStats
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class EpochStats:
+    loss_sum: float = 0.0
+    correct: int = 0
+    seen: int = 0
+    grad_norm_sum: float = 0.0
+    grad_steps: int = 0
+
+    def update(
+        self,
+        loss: float,
+        n: int,
+        correct: int,
+        grad_norm: float,
+    ) -> None:
+        self.loss_sum += loss * n
+        self.correct += correct
+        self.seen += n
+        self.grad_norm_sum += grad_norm
+        self.grad_steps += 1
+
+    @property
+    def avg_loss(self) -> float:
+        return self.loss_sum / max(1, self.seen)
+
+    @property
+    def acc(self) -> float:
+        return self.correct / max(1, self.seen)
+
+    @property
+    def avg_grad_norm(self) -> float:
+        return self.grad_norm_sum / max(1, self.grad_steps)
 
 
 def save_checkpoint(
@@ -164,11 +199,7 @@ def train(
     for epoch in range(start_epoch, epochs):
         model.train()
         epoch_start = time.monotonic()
-        running_loss = 0.0
-        running_correct = 0
-        running_seen = 0
-        running_grad_norm = 0.0
-        running_grad_steps = 0
+        epoch_stats = EpochStats()
 
         pbar = tqdm(
             train_loader,
@@ -209,34 +240,32 @@ def train(
             ema.update(model)
 
             preds = (logits > 0).float()
-            running_loss += loss.item() * imgs.size(0)
-            running_correct += (preds == labels).sum().item()
-            running_seen += imgs.size(0)
-            running_grad_norm += grad_norm.item()
-            running_grad_steps += 1
+            epoch_stats.update(
+                loss=loss.item(),
+                n=imgs.size(0),
+                correct=int((preds == labels).sum().item()),
+                grad_norm=grad_norm.item(),
+            )
 
             lr_now = optimizer.param_groups[0]["lr"]
-            acc = running_correct / max(1, running_seen)
-            avg_loss = running_loss / max(1, running_seen)
-            avg_grad_norm = running_grad_norm / max(1, running_grad_steps)
             pbar.set_postfix(
-                acc=f"{acc:.3f}",
-                loss=f"{avg_loss:.4f}",
+                acc=f"{epoch_stats.acc:.3f}",
+                loss=f"{epoch_stats.avg_loss:.4f}",
                 lr=f"{lr_now:.2e}",
-                gn=f"{avg_grad_norm:.2f}",
+                gn=f"{epoch_stats.avg_grad_norm:.2f}",
             )
             if global_step % constants.LOG_STEP == 0:
                 logger.info(
                     "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e grad_norm=%.2f",
                     epoch, global_step, total_steps,
-                    avg_loss, acc, lr_now, avg_grad_norm,
+                    epoch_stats.avg_loss, epoch_stats.acc, lr_now, epoch_stats.avg_grad_norm,
                 )
             global_step += 1
 
         dt = time.monotonic() - epoch_start
         logger.info(
             "epoch %d done in %.0fs, throughput %.1f img/s",
-            epoch, dt, running_seen / dt,
+            epoch, dt, epoch_stats.seen / dt,
         )
 
         ckpt = checkpoint_dir / f"epoch_{epoch:03d}.pt"
