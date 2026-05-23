@@ -19,6 +19,7 @@ DATASETS = [
         name="imagenet",
         train=[
             PATH_TO_DATASETS / Path("ILSVRC2017/Data/CLS-LOC/train"),
+            PATH_TO_DATASETS / Path("ILSVRC2017/Data/CLS-LOC/test"),
         ],
         val=[
             PATH_TO_DATASETS / Path("ILSVRC2017/Data/CLS-LOC/val"),
@@ -30,6 +31,7 @@ DATASETS = [
         name="coco",
         train=[
             PATH_TO_DATASETS / Path("coco/train2017"),
+            PATH_TO_DATASETS / Path("coco/test2017"),
         ],
         val=[
             PATH_TO_DATASETS / Path("coco/val2017"),
