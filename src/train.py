@@ -27,6 +27,7 @@ import config
 import constants
 from datasets import build_dataset
 from models import ModelEMA, RotationModel
+from stats import NormStats
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def train(
     train_loader: DataLoader,
     checkpoint_dir: Path,
     seed: int,
+    stats: NormStats,
     epochs: int = 100,
     lr: float = 1e-3,
     weight_decay: float = 0.05,
@@ -219,7 +221,10 @@ def train(
             model,
             ema,
             optimizer,
-            extras={"epoch": epoch},
+            extras={
+                "epoch": epoch,
+                "stats": {"mean": list(stats.mean), "std": list(stats.std)},
+            },
         )
         logger.info("saved %s", ckpt)
 
@@ -231,7 +236,7 @@ def main(args) -> None:
 
     device = torch.device(args.device)
 
-    ds = build_dataset(
+    ds, stats = build_dataset(
         split="train",
         datasets=config.DATASETS,
         device=device,
@@ -255,6 +260,7 @@ def main(args) -> None:
         train_loader=dl,
         seed=args.seed,
         checkpoint_dir=constants.CHECKPOINT_DIR,
+        stats=stats,
         resume_from=args.resume,
     )
 

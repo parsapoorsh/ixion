@@ -28,16 +28,24 @@ from torchvision import transforms as T
 
 import constants
 from models.rotation import RotationModel
+from stats import NormStats
 from utils.image_io import open_rgb
 
 
-def load_model(checkpoint: Path, device: torch.device) -> RotationModel:
-    model = RotationModel()
+def load_model(
+    checkpoint: Path,
+    device: torch.device,
+) -> tuple[RotationModel, NormStats]:
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
+    if "stats" not in payload:
+        raise KeyError(f"checkpoint missing 'stats'; keys={list(payload)}")
+    raw_stats = payload["stats"]
+    stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))
+    model = RotationModel()
     model.load_state_dict(payload["ema"])
     model.to(device)
     model.train(False)
-    return model
+    return model, stats
 
 
 def compute_gradcam(
@@ -157,16 +165,13 @@ def main() -> None:
     args.images = [p for p in args.images if p.is_file()]
 
     device = torch.device(args.device)
-    model = load_model(args.checkpoint, device)
-
-    project_root = Path(__file__).parent.parent
-    mean, std = # TODO: compute on the run or cache
+    model, stats = load_model(args.checkpoint, device)
 
     preprocess = T.Compose([
         T.Resize(constants.RESIZE_SIZE),
         T.CenterCrop(constants.INPUT_SIZE),
         T.ToTensor(),
-        T.Normalize(mean, std),
+        T.Normalize(stats.mean, stats.std),
     ])
 
     args.out_dir.mkdir(exist_ok=True)

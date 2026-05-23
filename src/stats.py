@@ -9,6 +9,7 @@ accumulate on the CPU in float64 to keep per-batch precision bounded.
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -19,13 +20,19 @@ if TYPE_CHECKING:
     pass
 
 
+@dataclass(frozen=True)
+class NormStats:
+    mean: tuple[float, float, float]
+    std: tuple[float, float, float]
+
+
 def compute_stats(
     dataset: Dataset,
     device: torch.device,
     num_workers: int,
     batch_size: int,
     prefetch_factor: int,
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+) -> NormStats:
     stats_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -59,4 +66,7 @@ def compute_stats(
     mean = sum_c / total_pixels
     variance = (sum_sq_c / total_pixels) - mean * mean
     std = variance.clamp_min(0).sqrt()
-    return tuple(mean.tolist()), tuple(std.tolist())
+    return NormStats(
+        mean=tuple(mean.tolist()),
+        std=tuple(std.tolist()),
+    )

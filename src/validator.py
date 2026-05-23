@@ -21,6 +21,7 @@ import config
 import constants
 from datasets import build_dataset
 from models import RotationModel
+from stats import NormStats
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -104,16 +105,24 @@ def validate_checkpoint(
             f"checkpoint missing '{state_key}' state dict; keys={list(payload)}"
         )
 
+    if "stats" not in payload:
+        raise KeyError(
+            f"checkpoint missing 'stats'; keys={list(payload)}"
+        )
+    raw_stats = payload["stats"]
+    stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))
+
     model = RotationModel(pretrained=False).to(device)
     model.load_state_dict(payload[state_key])
 
-    val_ds = build_dataset(
+    val_ds, _ = build_dataset(
         split="val",
         datasets=config.DATASETS,
         device=device,
         num_workers=num_workers,
         batch_size=batch_size,
         prefetch_factor=prefetch_factor,
+        stats=stats,
     )
     val_loader = DataLoader(
         val_ds,

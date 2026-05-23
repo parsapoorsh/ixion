@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 import constants
 from builders import build_eval_transform, build_train_transform, eval_preprocess
-from stats import compute_stats
+from stats import NormStats, compute_stats
 from utils.image_io import open_rgb
 from utils.index import index_files
 
@@ -125,8 +125,9 @@ def build_dataset(
     num_workers: int,
     batch_size: int,
     prefetch_factor: int,
+    stats: NormStats | None = None,
     invalidate_cache: bool = False,
-) -> RotationPairDataset:
+) -> tuple[RotationPairDataset, NormStats]:
     roots = [
         root
         for ds in datasets
@@ -139,20 +140,21 @@ def build_dataset(
         invalidate_cache=invalidate_cache,
     )
 
-    mean, std = compute_stats(
-        ImageLoader(files=files, transform=eval_preprocess),
-        device=device,
-        num_workers=num_workers,
-        batch_size=batch_size,
-        prefetch_factor=prefetch_factor,
-    )
+    if stats is None:
+        stats = compute_stats(
+            ImageLoader(files=files, transform=eval_preprocess),
+            device=device,
+            num_workers=num_workers,
+            batch_size=batch_size,
+            prefetch_factor=prefetch_factor,
+        )
 
     transform = (
-        build_train_transform(mean=mean, std=std)
+        build_train_transform(mean=stats.mean, std=stats.std)
         if split == "train"
-        else build_eval_transform(mean=mean, std=std)
+        else build_eval_transform(mean=stats.mean, std=stats.std)
     )
     return RotationPairDataset(
         base=ImageLoader(files=files),
         transform=transform,
-    )
+    ), stats
