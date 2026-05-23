@@ -19,7 +19,11 @@ from torch.utils.data import DataLoader
 
 import config
 import constants
+from builders import build_eval_transform
+from datasets import ImageLoader, RotationPairDataset
 from models import RotationModel
+from stats import compute_stats
+from utils.index import index_files
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -73,6 +77,36 @@ def run_validation(
     return loss, acc, per_class
 
 
+def build_val_dataset(
+    device: torch.device,
+    num_workers: int,
+    batch_size: int,
+    prefetch_factor: int,
+) -> RotationPairDataset:
+    files = index_files(
+        name="val",
+        roots=[i for ds in config.DATASETS for i in ds.val],
+        cache_dir=constants.INDEX_CACHE_DIR,
+        invalidate_cache=False,
+    )
+
+    mean, std = compute_stats(
+        files,
+        device=device,
+        num_workers=num_workers,
+        batch_size=batch_size,
+        prefetch_factor=prefetch_factor,
+    )
+
+    return RotationPairDataset(
+        base=ImageLoader(files=files),
+        transform=build_eval_transform(
+            mean=mean,
+            std=std,
+        ),
+    )
+
+
 def validate_checkpoint(
     checkpoint_path: Path,
     device: torch.device,
@@ -107,11 +141,10 @@ def validate_checkpoint(
     model.load_state_dict(payload[state_key])
 
     val_ds = build_val_dataset(
-        config.DATASETS,
-        input_size=constants.INPUT_SIZE,
-        resize_size=constants.RESIZE_SIZE,
-        num_workers=num_workers,
         device=device,
+        num_workers=num_workers,
+        batch_size=batch_size,
+        prefetch_factor=prefetch_factor,
     )
     val_loader = DataLoader(
         val_ds,
