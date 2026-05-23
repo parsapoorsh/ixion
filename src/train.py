@@ -16,7 +16,6 @@ import logging
 import math
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -24,25 +23,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-import config
 import constants
-from datasets import build_train_dataset
 from models import ModelEMA, RotationModel
-from utils.index import clear_cache
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class RunConfig:
-    """Process / IO / reproducibility - independent of recipe."""
-    device: torch.device
-    batch_size: int
-    num_workers: int
-    prefetch_factor: int
-    seed: int
-    log_every: int = constants.LOG_STEP
 
 
 def save_checkpoint(
@@ -84,30 +69,11 @@ def cosine_with_warmup(
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
-def build_train_loader(run: RunConfig) -> DataLoader:
-    logger.info("building train dataset...")
-    train_ds = build_train_dataset(
-        config.DATASETS,
-        input_size=constants.INPUT_SIZE,
-        resize_size=constants.RESIZE_SIZE,
-        num_workers=run.num_workers,
-        device=run.device,
-    )
-    logger.info("train pairs: %d", len(train_ds))
-    return DataLoader(
-        train_ds,
-        batch_size=run.batch_size,
-        shuffle=True,
-        num_workers=run.num_workers,
-        pin_memory=run.device.type == "cuda",
-        persistent_workers=run.num_workers > 0,
-        prefetch_factor=run.prefetch_factor if run.num_workers > 0 else None,
-        drop_last=True,
-    )
-
-
 def train_one_run(
-    run: RunConfig,
+    device: torch.device,
+    train_loader: DataLoader,
+    checkpoint_dir: Path,
+    seed: int,
     epochs: int = 100,
     lr: float = 1e-3,
     weight_decay: float = 0.05,
@@ -116,11 +82,10 @@ def train_one_run(
     ema_decay: float = 0.9999,
     resume_from: Path | None = None,
 ) -> None:
-    torch.manual_seed(run.seed)
+    torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
-    train_loader = build_train_loader(run)
 
-    model = RotationModel(pretrained=False).to(run.device)
+    model = RotationModel(pretrained=False).to(device)
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
     ema = ModelEMA(model, decay=ema_decay)
 
@@ -133,7 +98,7 @@ def train_one_run(
     # Each base image yields 1 upright + 3 rotated views, so the positive
     # (upright) class is outnumbered 1:3 - pos_weight rebalances the loss.
     loss_fn = nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor(3.0, device=run.device),
+        pos_weight=torch.tensor(3.0, device=device),
     )
 
     steps_per_epoch = len(train_loader)
@@ -146,7 +111,7 @@ def train_one_run(
 
     start_epoch = 0
     if resume_from is not None:
-        payload = torch.load(resume_from, map_location=run.device, weights_only=False)
+        payload = torch.load(resume_from, map_location=device, weights_only=False)
         model.load_state_dict(payload["model"])
         ema.module.load_state_dict(payload["ema"])
         ema.step = int(payload.get("ema_step", 0))
@@ -161,6 +126,7 @@ def train_one_run(
             "resumed from %s (next epoch=%d, ema_step=%d)",
             resume_from, start_epoch, ema.step,
         )
+        del payload
 
     # Compile after any state_dict load so checkpoints are saved/loaded in
     # uncompiled form (no "_orig_mod." prefix in the on-disk dict).
@@ -185,11 +151,11 @@ def train_one_run(
         )
         for imgs, labels in pbar:
             imgs = imgs.to(
-                run.device,
+                device,
                 non_blocking=True,
                 memory_format=torch.channels_last,
             )
-            labels = labels.to(run.device, non_blocking=True).float()
+            labels = labels.to(device, non_blocking=True).float()
 
             scale = cosine_with_warmup(
                 global_step,
@@ -201,7 +167,7 @@ def train_one_run(
             for group in optimizer.param_groups:
                 group["lr"] = lr * scale
 
-            with torch.autocast(device_type=run.device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
                 logits = model(imgs)
                 loss = loss_fn(logits, labels)
 
@@ -226,12 +192,12 @@ def train_one_run(
             avg_loss = running_loss / max(1, running_seen)
             avg_grad_norm = running_grad_norm / max(1, running_grad_steps)
             pbar.set_postfix(
-                loss=f"{avg_loss:.4f}",
                 acc=f"{acc:.3f}",
+                loss=f"{avg_loss:.4f}",
                 lr=f"{lr_now:.2e}",
                 gn=f"{avg_grad_norm:.2f}",
             )
-            if global_step % run.log_every == 0:
+            if global_step % constants.LOG_STEP == 0:
                 logger.info(
                     "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e grad_norm=%.2f",
                     epoch, global_step, total_steps,
@@ -245,7 +211,7 @@ def train_one_run(
             epoch, dt, running_seen / dt,
         )
 
-        ckpt = constants.CHECKPOINT_DIR / f"epoch_{epoch:03d}.pt"
+        ckpt = checkpoint_dir / f"epoch_{epoch:03d}.pt"
         save_checkpoint(
             ckpt,
             model,
@@ -259,7 +225,7 @@ def train_one_run(
 
 
 def main() -> None:
-    setup_logging()
+    setup_logging(constants.LOGS_DIR)
 
     p = argparse.ArgumentParser(
         description="Train the rotation detector.",
@@ -319,7 +285,10 @@ def main() -> None:
         seed=args.seed,
     )
 
-    train_one_run(run, resume_from=args.resume)
+    train_one_run(
+        run,
+        resume_from=args.resume,
+    )
 
 
 if __name__ == "__main__":
