@@ -50,41 +50,42 @@ def load_model(
     return model, stats
 
 
-def compute_gradcam(
+def compute_gradcam_batch(
     model: RotationModel,
     tensor: torch.Tensor,
-) -> np.ndarray:
-    """Return a (H, W) heatmap in [0, 1] for the upright logit."""
+) -> tuple[list[np.ndarray], list[float]]:
+    """Run one forward+backward for a batched tensor and return per-sample
+    GradCAM heatmaps (each in [0, 1]) plus per-sample P(upright)."""
     target_layer: nn.Module = model.backbone.conv_head  # type: ignore[assignment]
 
     saved_features: list[torch.Tensor] = []
     saved_grads: list[torch.Tensor] = []
 
-    def _fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
+    def fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
         saved_features.append(out)
 
-    def _bwd(_m: nn.Module, _gin: object, gout: tuple[torch.Tensor, ...]) -> None:
+    def bwd(_m: nn.Module, _gin: object, gout: tuple[torch.Tensor, ...]) -> None:
         saved_grads.append(gout[0])
 
-    fh = target_layer.register_forward_hook(_fwd)
-    bh = target_layer.register_full_backward_hook(_bwd)  # type: ignore[arg-type]
+    fh = target_layer.register_forward_hook(fwd)
+    bh = target_layer.register_full_backward_hook(bwd)  # type: ignore[arg-type]
 
-    output = model(tensor)
+    output = model(tensor)                 # (B,) or (B, 1)
     model.zero_grad()
-    output[0].backward()
+    output.sum().backward()                # per-sample grads are independent
 
     fh.remove()
     bh.remove()
 
-    feat = saved_features[0]           # (1, C, H, W)
-    grad = saved_grads[0]              # (1, C, H, W)
+    feat = saved_features[0]               # (B, C, H, W)
+    grad = saved_grads[0]                  # (B, C, H, W)
     weights = grad.mean(dim=(2, 3), keepdim=True)
-    cam = nn.functional.relu((weights * feat).sum(dim=1)).squeeze(0)
-    cam = cam.cpu().detach().float().numpy()
+    cam = nn.functional.relu((weights * feat).sum(dim=1))   # (B, H, W)
+    cam_max = cam.amax(dim=(1, 2), keepdim=True).clamp(min=1e-8)
+    cam = (cam / cam_max).cpu().detach().float().numpy()
 
-    if cam.max() > 0:
-        cam /= cam.max()
-    return cam
+    probs = output.detach().sigmoid().cpu().float().reshape(-1).tolist()
+    return [cam[i] for i in range(cam.shape[0])], probs
 
 
 def make_overlay(
@@ -105,19 +106,18 @@ def make_overlay(
     return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
 
 
-def compute_guided_gradcam(
+def compute_guided_gradcam_batch(
     model: RotationModel,
     tensor: torch.Tensor,
-) -> np.ndarray:
-    """Guided backprop gated by the GradCAM heatmap.
+    cams: list[np.ndarray],
+) -> list[np.ndarray]:
+    """Guided backprop gated by the supplied GradCAM heatmaps.
 
-    Produces a sharp, class-discriminative, edge-like map at full input
-    resolution — the classic 'guided GradCAM' visualisation. SiLU stand-in
-    for ReLU in the guided-BP gate: only pass gradient where the SiLU output
-    was positive AND the incoming gradient is positive.
+    Produces sharp, class-discriminative, edge-like maps at full input
+    resolution. SiLU stand-in for ReLU in the guided-BP gate: only pass
+    gradient where the SiLU output was positive AND the incoming gradient
+    is positive. Runs a single batched forward+backward over the batch.
     """
-    cam = compute_gradcam(model, tensor.detach().clone())
-
     silu_outputs: dict[int, torch.Tensor] = {}
     handles: list[torch.utils.hooks.RemovableHandle] = []
 
@@ -151,27 +151,30 @@ def compute_guided_gradcam(
         x = tensor.detach().clone().requires_grad_(True)
         output = model(x)
         model.zero_grad()
-        output[0].backward()
+        output.sum().backward()
     finally:
         for h in handles:
             h.remove()
         for sm, was_inplace in zip(silu_modules, original_inplace):
             sm.inplace = was_inplace
 
-    grad = x.grad[0].abs().sum(dim=0)              # type: ignore[union-attr]  # (H, W)
+    grad = x.grad.abs().sum(dim=1)                  # type: ignore[union-attr]  # (B, H, W)
     grad_np = grad.cpu().detach().float().numpy()
 
-    h_in, w_in = grad_np.shape
-    cam_up = np.array(
-        Image.fromarray((cam * 255).astype(np.uint8))
-        .resize((w_in, h_in), Image.Resampling.BICUBIC),
-    ).astype(np.float32) / 255.0
+    guided_out: list[np.ndarray] = []
+    for i, cam in enumerate(cams):
+        h_in, w_in = grad_np[i].shape
+        cam_up = np.array(
+            Image.fromarray((cam * 255).astype(np.uint8))
+            .resize((w_in, h_in), Image.Resampling.BICUBIC),
+        ).astype(np.float32) / 255.0
 
-    guided = grad_np * cam_up
-    p99 = float(np.percentile(guided, 99))
-    if p99 > 0:
-        guided = np.clip(guided / p99, 0.0, 1.0)
-    return guided
+        guided = grad_np[i] * cam_up
+        p99 = float(np.percentile(guided, 99))
+        if p99 > 0:
+            guided = np.clip(guided / p99, 0.0, 1.0)
+        guided_out.append(guided)
+    return guided_out
 
 
 def visualise_grid(
@@ -208,29 +211,19 @@ def compute_rotations(
     pil_img: Image.Image,
     preprocess: T.Compose,
     device: torch.device,
-) -> tuple[list[Image.Image], list[float], list[np.ndarray]]:
+) -> tuple[list[Image.Image], list[float], list[np.ndarray], torch.Tensor]:
     crop = T.Compose([
         T.Resize(constants.RESIZE_SIZE),
         T.CenterCrop(constants.INPUT_SIZE),
     ])(pil_img)
 
-    probs: list[float] = []
-    cams: list[np.ndarray] = []
-    displays: list[Image.Image] = []
+    displays = [crop.rotate(a) if a != 0 else crop for a in constants.ROTATIONS]
+    tensors = torch.stack(
+        [preprocess(d) for d in displays]  # type: ignore[arg-type]
+    ).to(device)
 
-    for angle in constants.ROTATIONS:
-        rotated = crop.rotate(angle) if angle != 0 else crop
-        displays.append(rotated)
-
-        with torch.no_grad():
-            tensor = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
-            prob = float(model(tensor).sigmoid().item())
-        probs.append(prob)
-
-        t = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
-        cams.append(compute_gradcam(model, t))
-
-    return displays, probs, cams
+    cams, probs = compute_gradcam_batch(model, tensors)
+    return displays, probs, cams, tensors
 
 
 def visualise(
@@ -260,7 +253,7 @@ def main(args) -> None:
 
     for img_path in args.images:
         pil = open_rgb(img_path)
-        displays, probs, cams = compute_rotations(model, pil, preprocess, device)
+        displays, probs, cams, tensors = compute_rotations(model, pil, preprocess, device)
 
         visualise(
             displays,
@@ -270,10 +263,7 @@ def main(args) -> None:
             args.out_dir / f"{img_path.stem}_gradcam.png",
         )
 
-        guided_cams = [
-            compute_guided_gradcam(model, preprocess(disp).unsqueeze(0).to(device))  # type: ignore[union-attr]
-            for disp in displays
-        ]
+        guided_cams = compute_guided_gradcam_batch(model, tensors, cams)
         visualise_grid(
             displays,
             probs,
