@@ -15,8 +15,7 @@ the correct orientation. The model is trained with EMA weights and compiled with
 
 Training data is ImageNet + COCO (general-purpose image corpora), which gives the
 model diverse texture/content without needing a labelled rotation dataset. Each base
-image yields 4 samples: 1 upright (label 1) + 3 rotated (label 0). The 1:3 class
-imbalance is corrected via `pos_weight=3.0` in the loss.
+image yields 4 samples: 1 upright (label 1) + 3 rotated (label 0).
 
 ## Source layout
 
