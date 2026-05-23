@@ -40,7 +40,7 @@ def compute_stats(
     total_pixels = 0
 
     pbar = tqdm(
-        total=len(stats_loader),
+        total=len(dataset),
         desc="stats",
         unit="img",
         file=sys.stdout,
