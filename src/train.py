@@ -111,7 +111,7 @@ def setup_model(
     device: torch.device,
     seed: int,
     lr: float = 3e-4,
-    weight_decay: float = 0.05,
+    weight_decay: float = 0.1,
     ema_decay: float = 0.9999,
     resume_from: Path | None = None,
 ) -> tuple[nn.Module, ModelEMA, torch.optim.Optimizer, nn.Module, int]:
@@ -172,7 +172,7 @@ def train(
     stats: NormStats,
     epochs: int = 20,
     lr: float = 3e-4,
-    weight_decay: float = 0.05,
+    weight_decay: float = 0.1,
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
