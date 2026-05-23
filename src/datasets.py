@@ -139,6 +139,7 @@ def build_dataset(
     )
 
     if stats is None:
+        logging.info("computing dataset stats for %s split (%d files)", split, len(files))
         stats = compute_stats(
             ImageLoader(files=files, transform=eval_preprocess),
             device=device,
@@ -146,6 +147,7 @@ def build_dataset(
             batch_size=batch_size,
             prefetch_factor=prefetch_factor,
         )
+        logging.info("stats - mean: %s | std: %s", stats.mean, stats.std)
 
     transform = (
         build_train_transform(mean=stats.mean, std=stats.std)
