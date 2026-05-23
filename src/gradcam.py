@@ -244,6 +244,79 @@ def visualise_grid(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
 
 
+def compute_rotation_diffs(
+    model: RotationModel,
+    displays: list[Image.Image],
+    preprocess: T.Compose,
+    device: torch.device,
+    ref_idx: int,
+) -> list[tuple[int, np.ndarray]]:
+    """Per-rotation diff in conv_head features vs the reference rotation.
+
+    Captures `backbone.conv_head` activations for every rotation, counter-
+    rotates each non-reference feature map back to the reference's frame,
+    then returns mean |diff| over channels. High values = spatial locations
+    where the model's late-stage representation changes between upright and
+    rotated views — i.e., what the model is using to *tell rotations apart*.
+    """
+    target = model.backbone.conv_head  # type: ignore[assignment]
+
+    features: list[torch.Tensor] = []
+    for disp in displays:
+        saved: list[torch.Tensor] = []
+
+        def _fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
+            saved.append(out)
+
+        h = target.register_forward_hook(_fwd)
+        with torch.no_grad():
+            t = preprocess(disp).unsqueeze(0).to(device)  # type: ignore[union-attr]
+            model(t)
+        h.remove()
+        features.append(saved[0].squeeze(0))  # (C, H, W)
+
+    ref_feat = features[ref_idx]
+    ref_angle = constants.ROTATIONS[ref_idx]
+
+    diffs: list[tuple[int, np.ndarray]] = []
+    for i, feat in enumerate(features):
+        if i == ref_idx:
+            continue
+        delta = (constants.ROTATIONS[i] - ref_angle) % 360
+        k = (-delta // 90) % 4  # counter-rotate to align with ref frame
+        feat_aligned = torch.rot90(feat, k=int(k), dims=(-2, -1))
+        diff = (ref_feat - feat_aligned).abs().mean(dim=0)
+        d = diff.cpu().float().numpy()
+        if d.max() > 0:
+            d /= d.max()
+        diffs.append((constants.ROTATIONS[i], d))
+    return diffs
+
+
+def visualise_rotation_diffs(
+    ref_display: Image.Image,
+    ref_angle: int,
+    diffs: list[tuple[int, np.ndarray]],
+    title: str,
+    out_path: Path,
+) -> None:
+    """Show the reference image with each rotation-vs-reference diff overlaid."""
+    fig = Figure(figsize=(4 * len(diffs), 4.5))
+    axes = fig.subplots(1, len(diffs))
+    if len(diffs) == 1:
+        axes = [axes]
+
+    for ax, (angle, heat) in zip(axes, diffs):
+        overlay = make_overlay(ref_display, heat, alpha=0.6, colormap="magma")
+        ax.imshow(overlay)
+        ax.set_title(f"{ref_angle}° vs {angle}°", fontsize=10)
+        ax.axis("off")
+
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+
+
 def compute_stage_maps(
     model: RotationModel,
     tensor: torch.Tensor,
@@ -415,6 +488,15 @@ def main(args) -> None:
             stage_maps,
             f"{img_path.name} — per-stage activations @ {constants.ROTATIONS[pred]}°",
             args.out_dir / f"{img_path.stem}_stages.png",
+        )
+
+        diffs = compute_rotation_diffs(model, displays, preprocess, device, pred)
+        visualise_rotation_diffs(
+            pred_display,
+            constants.ROTATIONS[pred],
+            diffs,
+            f"{img_path.name} — late-feature diff vs predicted upright",
+            args.out_dir / f"{img_path.stem}_rotdiff.png",
         )
 
 
