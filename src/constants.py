@@ -11,7 +11,6 @@ from pathlib import Path
 ROTATIONS = (0, 90, 180, 270)
 # Rotated views generated per base image. The model itself has a single
 # output neuron (P(upright)); this is purely a data-side count.
-NUM_ROTATIONS = len(ROTATIONS)
 
 # Path layout. PROJECT_ROOT resolves via this file's location, so it
 # stays correct as long as constants.py lives directly under src/.
