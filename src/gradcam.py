@@ -226,6 +226,13 @@ def compute_rotations(
     return displays, probs, cams, tensors
 
 
+def predicted_angle(probs: list[float]) -> float:
+    angles = np.deg2rad(constants.ROTATIONS)
+    x = float(np.sum(np.array(probs) * np.cos(angles)))
+    y = float(np.sum(np.array(probs) * np.sin(angles)))
+    return float(np.rad2deg(np.arctan2(y, x)) % 360.0)
+
+
 def visualise(
     displays: list[Image.Image],
     probs: list[float],
@@ -254,12 +261,13 @@ def main(args) -> None:
     for img_path in args.images:
         pil = open_rgb(img_path)
         displays, probs, cams, tensors = compute_rotations(model, pil, preprocess, device)
+        angle = predicted_angle(probs)
 
         visualise(
             displays,
             probs,
             cams,
-            img_path.name,
+            f"{img_path.name} — predicted angle {angle:.1f}°",
             args.out_dir / f"{img_path.stem}_gradcam.png",
         )
 
@@ -268,7 +276,7 @@ def main(args) -> None:
             displays,
             probs,
             guided_cams,
-            f"{img_path.name} — guided GradCAM",
+            f"{img_path.name} — guided GradCAM — predicted angle {angle:.1f}°",
             args.out_dir / f"{img_path.stem}_guidedcam.png",
             colormap="inferno",
         )
