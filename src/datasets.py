@@ -49,8 +49,6 @@ class DatasetSpec:
     name: str
     train: list[Path]
     val: list[Path]
-    mean: tuple[float, float, float] | None = None
-    std: tuple[float, float, float] | None = None
 
 
 class ImageLoader(Dataset):

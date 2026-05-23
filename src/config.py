@@ -24,8 +24,6 @@ DATASETS = [
         val=[
             PATH_TO_DATASETS / Path("ILSVRC2017/Data/CLS-LOC/val"),
         ],
-        mean=None,
-        std=None,
     ),
     DatasetSpec(
         name="coco",
@@ -36,8 +34,6 @@ DATASETS = [
         val=[
             PATH_TO_DATASETS / Path("coco/val2017"),
         ],
-        mean=None,
-        std=None,
     ),
 ]
 
