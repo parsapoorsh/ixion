@@ -19,7 +19,6 @@ from torch.utils.data import DataLoader
 
 import config
 import constants
-from datasets import build_val_dataset
 from models import RotationModel
 from utils.logsetup import setup_logging
 

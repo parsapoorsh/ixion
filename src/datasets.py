@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from PIL import UnidentifiedImageError
-from torch.utils.data import ConcatDataset, Dataset
+from torch.utils.data import Dataset
 from torchvision.transforms import functional as TF
 
 if TYPE_CHECKING:
@@ -30,9 +30,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
 import constants
-from builders import build_eval_transform, build_train_transform
 from utils.image_io import open_rgb
-from utils.index import index_files
 
 logger = logging.getLogger(__name__)
 
@@ -92,10 +90,10 @@ class RotationPairDataset(Dataset):
         self.transform = transform
 
     def __len__(self) -> int:
-        return len(self.base) * constants.NUM_ROTATIONS
+        return len(self.base) * len(constants.ROTATIONS)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, float]:
-        img_idx, rot_idx = divmod(idx, constants.NUM_ROTATIONS)
+        img_idx, rot_idx = divmod(idx, len(constants.ROTATIONS))
         n = len(self.base)
         for offset in range(n):
             probe = (img_idx + offset) % n
@@ -115,62 +113,3 @@ class RotationPairDataset(Dataset):
 
         prob = 1.0 if rot_idx == 0 else 0.0
         return tensor, prob
-
-
-def build_train_dataset(
-    specs: Sequence[DatasetSpec],
-    input_size: int,
-    resize_size: int,
-    num_workers: int,
-    device: torch.device,
-) -> ConcatDataset:
-    """One RotationPairDataset per source dataset, normalized with that source's
-    own mean/std, then concatenated. Each image is normalized by the stats it
-    was registered with, which keeps the input distribution to the model
-    consistent in mean=0/std=1 space even when sources differ.
-    """
-    parts: list[RotationPairDataset] = []
-    for spec in specs:
-        files = index_files(f"train_{spec.name}", spec.train)
-        channel_stats = stats.get_stats(
-            spec,
-            input_size=input_size,
-            resize_size=resize_size,
-            num_workers=num_workers,
-            device=device,
-        )
-        transform = build_train_transform(
-            mean=channel_stats.mean,
-            std=channel_stats.std,
-            input_size=input_size,
-            resize_size=resize_size,
-        )
-        parts.append(RotationPairDataset(ImageLoader(files), transform))
-    return ConcatDataset(parts)
-
-
-def build_val_dataset(
-    specs: Sequence[DatasetSpec],
-    input_size: int,
-    resize_size: int,
-    num_workers: int,
-    device: torch.device,
-) -> ConcatDataset:
-    parts: list[RotationPairDataset] = []
-    for spec in specs:
-        files = index_files(f"val_{spec.name}", spec.val)
-        channel_stats = stats.get_stats(
-            spec,
-            input_size=input_size,
-            resize_size=resize_size,
-            num_workers=num_workers,
-            device=device,
-        )
-        transform = build_eval_transform(
-            mean=channel_stats.mean,
-            std=channel_stats.std,
-            input_size=input_size,
-            resize_size=resize_size,
-        )
-        parts.append(RotationPairDataset(ImageLoader(files), transform))
-    return ConcatDataset(parts)
