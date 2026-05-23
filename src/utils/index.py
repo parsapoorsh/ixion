@@ -1,10 +1,11 @@
 """File-system indexing: scan dataset directories once, cache the result.
 
 Scanning 1.2M files takes tens of seconds; once cached, subsequent runs read
-the list straight back. The cache stores the path list as a nested trie
-(each directory becomes a dict, files become leaves with a null value) and
-the JSON is written through lzma. Shared path prefixes collapse and the
-file shrinks by roughly an order of magnitude vs. the flat list.
+the trie straight back. Paths are inserted into a nested trie as the scan
+walks the filesystem (each directory becomes a dict, files become leaves
+with a null value) so we never hold a flat ``list[Path]`` in memory. The
+JSON is written through lzma; shared path prefixes collapse and the file
+shrinks by roughly an order of magnitude vs. a flat list.
 
 At read time we don't materialise the full path list. ``index_files``
 returns a ``PathList`` - a sequence-like view over the trie that
@@ -55,35 +56,25 @@ def index_files(name: str, roots: Sequence[Path]) -> "PathList":
         return PathList(trie)
 
     t0 = time.monotonic()
-    files: list[Path] = []
+    trie: dict = {}
+    count = 0
     for root in roots:
         if not root.exists():
             raise FileNotFoundError(root)
         for entry in root.rglob("*"):
             if entry.is_file():
-                files.append(entry)
+                parts = entry.parts
+                node = trie
+                for part in parts[:-1]:
+                    node = node.setdefault(part, {})
+                node[parts[-1]] = None
+                count += 1
     dt = time.monotonic() - t0
-    logger.info("scanned %s: %d files in %.1fs", name, len(files), dt)
+    logger.info("scanned %s: %d files in %.1fs", name, count, dt)
 
-    trie = paths_to_trie(files)
     with lzma.open(cache, "wt") as f:
         json.dump(trie, f)
     return PathList(trie)
-
-
-def paths_to_trie(paths: Sequence[Path]) -> dict[str, object]:
-    """Collapse a list of paths into a nested dict keyed by path component.
-
-    Files become leaves with the value ``None``; directories become subdicts.
-    """
-    root: dict = {}
-    for p in paths:
-        parts = p.parts
-        node = root
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = None
-    return root
 
 
 class PathList(Sequence[Path]):
