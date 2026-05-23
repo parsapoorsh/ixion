@@ -26,7 +26,6 @@ from tqdm.auto import tqdm
 
 import config
 import constants
-import stats
 from datasets import build_train_dataset
 from models import ModelEMA, RotationModel
 from utils.index import clear_cache
@@ -310,8 +309,7 @@ def main() -> None:
     args = p.parse_args()
 
     if args.invalidate_cache:
-        clear_cache()
-        stats.clear_cache()
+        # TODO: for stats
 
     run = RunConfig(
         device=torch.device(args.device),

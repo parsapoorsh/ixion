@@ -16,13 +16,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
-import matplotlib.cm as cm
 import numpy as np
 import torch
 import torch.nn as nn
+import matplotlib.cm as cm
 from matplotlib.figure import Figure
 from PIL import Image
 from torchvision import transforms as T
@@ -30,20 +29,6 @@ from torchvision import transforms as T
 import constants
 from models.rotation import RotationModel
 from utils.image_io import open_rgb
-
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
-
-
-def load_cached_stats(cache_dir: Path) -> tuple[tuple, tuple]:
-    """Return (mean, std) from the first stats cache file found, or ImageNet defaults."""
-    for path in sorted(cache_dir.glob("stats_*.json")):
-        try:
-            data = json.loads(path.read_text())
-            return tuple(data["mean"]), tuple(data["std"])
-        except Exception:
-            continue
-    return IMAGENET_MEAN, IMAGENET_STD
 
 
 def load_model(checkpoint: Path, device: torch.device) -> RotationModel:
@@ -175,7 +160,7 @@ def main() -> None:
     model = load_model(args.checkpoint, device)
 
     project_root = Path(__file__).parent.parent
-    mean, std = load_cached_stats(project_root / "cache")
+    mean, std = # TODO: compute on the run or cache
 
     preprocess = T.Compose([
         T.Resize(constants.RESIZE_SIZE),

@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from PIL import Image
 
 import constants
-import stats
 from builders import build_eval_transform, build_train_transform
 from utils.image_io import open_rgb
 from utils.index import index_files
