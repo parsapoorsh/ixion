@@ -26,21 +26,6 @@ def build_train_transform(
     ])
 
 
-def build_eval_preprocess(
-    input_size: int,
-    resize_size: int,
-) -> T.Compose:
-    """Resize → CenterCrop → ToTensor - the pre-Normalize half of the eval
-    transform. Shared with stats computation, which needs the same shape
-    and dtype pipeline but cannot normalise (it's computing the normaliser).
-    """
-    return T.Compose([
-        T.Resize(resize_size),
-        T.CenterCrop(input_size),
-        T.ToTensor(),
-    ])
-
-
 def build_eval_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
@@ -48,6 +33,8 @@ def build_eval_transform(
     resize_size: int,
 ) -> T.Compose:
     return T.Compose([
-        build_eval_preprocess(input_size=input_size, resize_size=resize_size),
+        T.Resize(resize_size),
+        T.CenterCrop(input_size),
+        T.ToTensor(),
         T.Normalize(mean, std),
     ])
