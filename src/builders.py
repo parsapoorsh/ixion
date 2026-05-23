@@ -13,7 +13,12 @@ def build_train_transform(
     return T.Compose([
         T.Resize(constants.RESIZE_SIZE),
         T.RandomCrop(constants.INPUT_SIZE),
-        T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
+        T.ColorJitter(
+            brightness=0.3,
+            contrast=0.3,
+            saturation=0.2,
+            hue=0.05,
+        ),
         T.RandomGrayscale(p=0.05),
         T.ToTensor(),
         T.Normalize(mean, std),
