@@ -87,9 +87,14 @@ def compute_gradcam(
     return cam
 
 
-def make_overlay(pil_img: Image.Image, cam: np.ndarray, alpha: float = 0.65) -> Image.Image:
+def make_overlay(
+    pil_img: Image.Image,
+    cam: np.ndarray,
+    alpha: float = 0.65,
+    colormap: str = "jet",
+) -> Image.Image:
     cam = np.sqrt(cam)  # spread activation — avoids tiny concentrated hot spots
-    heatmap = cm.jet(cam)[:, :, :3]
+    heatmap = cm.get_cmap(colormap)(cam)[:, :, :3]
     heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(
         pil_img.size, Image.Resampling.BICUBIC
     )
@@ -98,6 +103,82 @@ def make_overlay(pil_img: Image.Image, cam: np.ndarray, alpha: float = 0.65) -> 
         + np.array(heatmap_pil, dtype=np.float32) * alpha
     )
     return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
+
+
+def compute_occlusion(
+    model: RotationModel,
+    tensor: torch.Tensor,
+    patch: int = 32,
+    stride: int = 16,
+    batch_size: int = 64,
+) -> np.ndarray:
+    """Drop in P(upright) when each spatial patch is masked to the mean colour.
+
+    Returns an (H, W) heatmap where higher = bigger drop = the model relied
+    on that region for its upright decision. ~170 forward passes per call
+    with default patch/stride at 224×224, batched for speed. Most direct
+    readout of 'what the model is actually using' since it perturbs the
+    real input rather than reasoning about gradients.
+    """
+    _, _, h, w = tensor.shape
+    with torch.no_grad():
+        base = float(model(tensor).sigmoid().item())
+
+    positions = [
+        (y, x)
+        for y in range(0, h - patch + 1, stride)
+        for x in range(0, w - patch + 1, stride)
+    ]
+
+    drops = torch.empty(len(positions), device=tensor.device)
+    with torch.no_grad():
+        for start in range(0, len(positions), batch_size):
+            chunk = positions[start:start + batch_size]
+            batch = tensor.expand(len(chunk), -1, -1, -1).clone()
+            for i, (y, x) in enumerate(chunk):
+                batch[i, :, y:y + patch, x:x + patch] = 0.0
+            probs = model(batch).sigmoid()
+            drops[start:start + len(chunk)] = base - probs
+
+    heat = torch.zeros(h, w, device=tensor.device)
+    counts = torch.zeros(h, w, device=tensor.device)
+    for (y, x), d in zip(positions, drops.tolist()):
+        heat[y:y + patch, x:x + patch] += d
+        counts[y:y + patch, x:x + patch] += 1
+    heat_np = (heat / counts.clamp(min=1)).cpu().numpy()
+    heat_np = np.clip(heat_np, 0.0, None)  # only positive drops matter
+    if heat_np.max() > 0:
+        heat_np /= heat_np.max()
+    return heat_np
+
+
+def visualise_grid(
+    displays: list[Image.Image],
+    probs: list[float],
+    heatmaps: list[np.ndarray],
+    title: str,
+    out_path: Path,
+    colormap: str = "jet",
+) -> None:
+    """Render a 2×2 rotation grid with `heatmaps[i]` overlaid on `displays[i]`."""
+    pred = int(np.argmax(probs))
+
+    fig = Figure(figsize=(10, 10))
+    axes = fig.subplots(2, 2)
+
+    for idx, (angle, heat, prob, disp) in enumerate(
+        zip(constants.ROTATIONS, heatmaps, probs, displays)
+    ):
+        img_overlay = make_overlay(disp, heat, colormap=colormap)
+        ax = axes[idx // 2, idx % 2]
+        marker = " *" if idx == pred else ""
+        ax.imshow(img_overlay)
+        ax.set_title(f"{angle}°{marker}  P(upright)={prob:.1%}", fontsize=11)
+        ax.axis("off")
+
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
 
 
 def compute_rotations(
@@ -137,24 +218,7 @@ def visualise(
     title: str,
     out_path: Path,
 ) -> None:
-    pred = int(np.argmax(probs))
-
-    fig = Figure(figsize=(10, 10))
-    axes = fig.subplots(2, 2)
-
-    for idx, (angle, cam, prob, disp) in enumerate(
-        zip(constants.ROTATIONS, cams, probs, displays)
-    ):
-        img_overlay = make_overlay(disp, cam)
-        ax = axes[idx // 2, idx % 2]
-        marker = " *" if idx == pred else ""
-        ax.imshow(img_overlay)
-        ax.set_title(f"{angle}°{marker}  P(upright)={prob:.1%}", fontsize=11)
-        ax.axis("off")
-
-    fig.suptitle(title, fontsize=11)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    visualise_grid(displays, probs, cams, title, out_path, colormap="jet")
 
 
 def main(args) -> None:
@@ -174,9 +238,28 @@ def main(args) -> None:
 
     for img_path in args.images:
         pil = open_rgb(img_path)
-        out_path = args.out_dir / f"{img_path.stem}_gradcam.png"
         displays, probs, cams = compute_rotations(model, pil, preprocess, device)
-        visualise(displays, probs, cams, img_path.name, out_path)
+
+        visualise(
+            displays,
+            probs,
+            cams,
+            img_path.name,
+            args.out_dir / f"{img_path.stem}_gradcam.png",
+        )
+
+        occlusions = [
+            compute_occlusion(model, preprocess(disp).unsqueeze(0).to(device))  # type: ignore[union-attr]
+            for disp in displays
+        ]
+        visualise_grid(
+            displays,
+            probs,
+            occlusions,
+            f"{img_path.name} — occlusion sensitivity",
+            args.out_dir / f"{img_path.stem}_occlusion.png",
+            colormap="inferno",
+        )
 
 
 if __name__ == "__main__":
