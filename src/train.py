@@ -170,7 +170,7 @@ def train(
     checkpoint_dir: Path,
     seed: int,
     stats: NormStats,
-    epochs: int = 100,
+    epochs: int = 20,
     lr: float = 1e-3,
     weight_decay: float = 0.05,
     warmup_epochs: int = 5,
