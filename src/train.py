@@ -110,9 +110,9 @@ def cosine_with_warmup(
 def setup_model(
     device: torch.device,
     seed: int,
-    lr: float = 3e-4,
-    weight_decay: float = 0.1,
-    ema_decay: float = 0.9999,
+    lr: float,
+    weight_decay: float,
+    ema_decay: float,
     resume_from: Path | None = None,
 ) -> tuple[nn.Module, ModelEMA, torch.optim.Optimizer, nn.Module, int]:
     torch.manual_seed(seed)
