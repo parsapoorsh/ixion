@@ -28,6 +28,7 @@ import constants
 from builders import build_train_transform
 from datasets import ImageLoader, RotationPairDataset
 from models import ModelEMA, RotationModel
+from stats import compute_stats
 from utils.index import index_files
 from utils.logsetup import setup_logging
 
@@ -228,6 +229,38 @@ def train(
     logger.info("done.")
 
 
+def build_train_ds(
+    device: torch.device,
+    num_workers: int,
+    batch_size: int,
+    prefetch_factor: int,
+    invalidate_cache: bool,
+) -> RotationPairDataset:
+    files = index_files(
+        name="train",
+        roots=[i for ds in config.DATASETS for i in ds.train],
+        cache_dir=constants.INDEX_CACHE_DIR,
+        invalidate_cache=invalidate_cache,
+    )
+
+    mean, std = compute_stats(
+        files,
+        device=device,
+        num_workers=num_workers,
+        batch_size=batch_size,
+        prefetch_factor=prefetch_factor,
+    )
+
+    ds = RotationPairDataset(
+        base=ImageLoader(files=files),
+        transform=build_train_transform(
+            mean=mean,
+            std=std,
+        )
+    )
+    return ds
+
+
 def main() -> None:
     setup_logging(constants.LOGS_DIR)
 
@@ -278,28 +311,14 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    roots = []
-    for ds in config.DATASETS:
-        roots.extend(i for i in ds.train)
+    device = torch.device(args.device)
 
-    files = index_files(
-        name="train",
-        roots=roots,
-        cache_dir=constants.INDEX_CACHE_DIR,
+    ds = build_train_ds(
+        device=device,
+        num_workers=args.num_workers,
+        batch_size=args.batch_size,
+        prefetch_factor=args.prefetch_factor,
         invalidate_cache=args.invalidate_cache,
-    )
-    im = ImageLoader(
-        files=files,
-        transform=None,
-    )
-    mean, std = compute_stats(im)
-
-    ds = RotationPairDataset(
-        base=im,
-        transform=build_train_transform(
-            mean=mean,
-            std=std,
-        )
     )
 
     dl = DataLoader(
@@ -307,12 +326,12 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
-        pin_memory=args.device.startswith("cuda"),
+        pin_memory=device.type == "cuda",
         shuffle=True,
     )
 
-        device=torch.device(args.device),
     train(
+        device=device,
         train_loader=dl,
         seed=args.seed,
         checkpoint_dir=constants.CHECKPOINT_DIR,
