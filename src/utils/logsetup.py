@@ -7,10 +7,9 @@ Kept in its own file so changing the format/level happens once.
 import logging
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from tqdm.auto import tqdm
-
-import constants
 
 
 class TqdmLoggingHandler(logging.Handler):
@@ -24,7 +23,10 @@ class TqdmLoggingHandler(logging.Handler):
             self.handleError(record)
 
 
-def setup_logging(level: int = logging.INFO) -> None:
+def setup_logging(
+    logs_dir: Path,
+    level: int = logging.INFO,
+) -> None:
     formatter = logging.Formatter(
         fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -33,8 +35,8 @@ def setup_logging(level: int = logging.INFO) -> None:
     console_handler = TqdmLoggingHandler()
     console_handler.setFormatter(formatter)
 
-    constants.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = constants.LOGS_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}.txt"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"{datetime.now():%Y-%m-%d_%H-%M-%S}.txt"
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
 
