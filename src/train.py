@@ -261,9 +261,38 @@ def build_train_ds(
     return ds
 
 
-def main() -> None:
+def main(args) -> None:
     setup_logging(constants.LOGS_DIR)
 
+    device = torch.device(args.device)
+
+    ds = build_train_ds(
+        device=device,
+        num_workers=args.num_workers,
+        batch_size=args.batch_size,
+        prefetch_factor=args.prefetch_factor,
+        invalidate_cache=args.invalidate_cache,
+    )
+
+    dl = DataLoader(
+        ds,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
+        pin_memory=device.type == "cuda",
+        shuffle=True,
+    )
+
+    train(
+        device=device,
+        train_loader=dl,
+        seed=args.seed,
+        checkpoint_dir=constants.CHECKPOINT_DIR,
+        resume_from=args.resume,
+    )
+
+
+if __name__ == "__main__":
     p = argparse.ArgumentParser(
         description="Train the rotation detector.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -311,33 +340,4 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    device = torch.device(args.device)
-
-    ds = build_train_ds(
-        device=device,
-        num_workers=args.num_workers,
-        batch_size=args.batch_size,
-        prefetch_factor=args.prefetch_factor,
-        invalidate_cache=args.invalidate_cache,
-    )
-
-    dl = DataLoader(
-        ds,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
-        pin_memory=device.type == "cuda",
-        shuffle=True,
-    )
-
-    train(
-        device=device,
-        train_loader=dl,
-        seed=args.seed,
-        checkpoint_dir=constants.CHECKPOINT_DIR,
-        resume_from=args.resume,
-    )
-
-
-if __name__ == "__main__":
-    main()
+    main(args)

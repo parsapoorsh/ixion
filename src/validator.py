@@ -141,54 +141,8 @@ def validate_checkpoint(
     )
 
 
-def main() -> None:
+def main(args) -> None:
     setup_logging(constants.LOGS_DIR)
-    parser = argparse.ArgumentParser(
-        description="Validate a single checkpoint against config.DATASETS.",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        required=True,
-        help="path to an epoch_NNN.pt checkpoint to validate",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        required=True,
-        help="torch device string (e.g. 'cuda', 'cuda:0', 'cpu')",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        required=True,
-        help="validation batch size",
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        required=True,
-        help="DataLoader worker processes for image decoding",
-    )
-    parser.add_argument(
-        "--prefetch-factor",
-        type=int,
-        required=True,
-        help="batches each worker keeps queued ahead of the consumer",
-    )
-    parser.add_argument(
-        "--weights",
-        choices=["ema", "raw"],
-        default="ema",
-        help="which weights to validate: EMA shadow (production) or raw training weights",
-    )
-    parser.add_argument(
-        "--max-batches",
-        type=int,
-        default=None,
-        help="stop after N batches (quick smoke test; default: full val set)",
-    )
-    args = parser.parse_args()
     validate_checkpoint(
         checkpoint_path=args.checkpoint,
         device=torch.device(args.device),
@@ -201,4 +155,51 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    p = argparse.ArgumentParser(
+        description="Validate a single checkpoint against config.DATASETS.",
+    )
+    p.add_argument(
+        "--checkpoint",
+        type=Path,
+        required=True,
+        help="path to an epoch_NNN.pt checkpoint to validate",
+    )
+    p.add_argument(
+        "--device",
+        type=str,
+        required=True,
+        help="torch device string (e.g. 'cuda', 'cuda:0', 'cpu')",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        required=True,
+        help="validation batch size",
+    )
+    p.add_argument(
+        "--num-workers",
+        type=int,
+        required=True,
+        help="DataLoader worker processes for image decoding",
+    )
+    p.add_argument(
+        "--prefetch-factor",
+        type=int,
+        required=True,
+        help="batches each worker keeps queued ahead of the consumer",
+    )
+    p.add_argument(
+        "--weights",
+        choices=["ema", "raw"],
+        default="ema",
+        help="which weights to validate: EMA shadow (production) or raw training weights",
+    )
+    p.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="stop after N batches (quick smoke test; default: full val set)",
+    )
+    args = p.parse_args()
+
+    main(args)
