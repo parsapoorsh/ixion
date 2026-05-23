@@ -57,6 +57,7 @@ def run_validation(
             mask = labels == c
             seen[c] += mask.sum()
             correct[c] += (preds[mask] == c).sum()
+
         total_loss += loss.item() * imgs.size(0)
         total_n += imgs.size(0)
         if batch_idx % constants.LOG_STEP == 0:
@@ -66,11 +67,11 @@ def run_validation(
                 (correct.sum() / seen.sum().clamp(min=1)).item(),
             )
 
-    return (
-        total_loss / max(1, total_n),
-        (correct.sum() / seen.sum().clamp(min=1)).item(),
-        (correct / seen.clamp(min=1)).cpu().tolist(),
-    )
+    loss = total_loss / max(1, total_n)
+    acc = (correct.sum() / seen.sum().clamp(min=1)).item()
+    per_class = (correct / seen.clamp(min=1)).cpu().tolist()
+
+    return loss, acc, per_class
 
 
 def validate_checkpoint(
@@ -142,7 +143,7 @@ def validate_checkpoint(
 
 
 def main() -> None:
-    setup_logging()
+    setup_logging(constants.LOGS_DIR)
     parser = argparse.ArgumentParser(
         description="Validate a single checkpoint against config.DATASETS.",
     )
