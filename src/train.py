@@ -299,8 +299,6 @@ def main() -> None:
         transform=build_train_transform(
             mean=mean,
             std=std,
-            input_size=constants.INPUT_SIZE,
-            resize_size=constants.RESIZE_SIZE,
         )
     )
 

@@ -8,17 +8,17 @@ import graph acyclic.
 
 from torchvision import transforms as T
 
+import constants
+
 
 def build_train_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
-    input_size: int,
-    resize_size: int,
 ) -> T.Compose:
     """Photometric-only augmentation. Any spatial flip/rotate would corrupt the label."""
     return T.Compose([
-        T.Resize(resize_size),
-        T.RandomCrop(input_size),
+        T.Resize(constants.RESIZE_SIZE),
+        T.RandomCrop(constants.INPUT_SIZE),
         T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
         T.RandomGrayscale(p=0.05),
         T.ToTensor(),
@@ -26,29 +26,18 @@ def build_train_transform(
     ])
 
 
-def build_eval_preprocess(
-    input_size: int,
-    resize_size: int,
-) -> T.Compose:
-    """Resize/CenterCrop/ToTensor, no normalization."""
-    return T.Compose([
-        T.Resize(resize_size),
-        T.CenterCrop(input_size),
-        T.ToTensor(),
-    ])
+eval_preprocess = T.Compose([
+    T.Resize(constants.RESIZE_SIZE),
+    T.CenterCrop(constants.INPUT_SIZE),
+    T.ToTensor(),
+])
 
 
 def build_eval_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
-    input_size: int,
-    resize_size: int,
 ) -> T.Compose:
-    pre_t = build_eval_preprocess(
-        input_size=input_size,
-        resize_size=resize_size
-    )
     return T.Compose([
-        *pre_t.transforms,
+        *eval_preprocess.transforms,
         T.Normalize(mean, std),
     ])
