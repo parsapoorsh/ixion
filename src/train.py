@@ -72,20 +72,14 @@ def cosine_with_warmup(
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
-def train(
+def setup_model(
     device: torch.device,
-    train_loader: DataLoader,
-    checkpoint_dir: Path,
     seed: int,
-    stats: NormStats,
-    epochs: int = 100,
     lr: float = 1e-3,
     weight_decay: float = 0.05,
-    warmup_epochs: int = 5,
-    grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
     resume_from: Path | None = None,
-) -> None:
+) -> tuple[nn.Module, ModelEMA, torch.optim.Optimizer, nn.Module, int]:
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
@@ -105,6 +99,59 @@ def train(
         pos_weight=torch.tensor(3.0, device=device),
     )
 
+    start_epoch = 0
+    if resume_from is not None:
+        payload = torch.load(resume_from, map_location=device, weights_only=False)
+        model.load_state_dict(payload["model"])
+
+        ema.module.load_state_dict(payload["ema"])
+        ema.step = int(payload.get("ema_step", 0))
+
+        if "optimizer" in payload:
+            optimizer.load_state_dict(payload["optimizer"])
+
+        if "rng_cpu" in payload:
+            torch.set_rng_state(payload["rng_cpu"].cpu())
+
+        if payload.get("rng_cuda") is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(payload["rng_cuda"])
+
+        start_epoch = int(payload["epoch"]) + 1
+        logger.info(
+            "resumed from %s (next epoch=%d, ema_step=%d)",
+            resume_from, start_epoch, ema.step,
+        )
+
+    # Compile after any state_dict load so checkpoints are saved/loaded in
+    # uncompiled form (no "_orig_mod." prefix in the on-disk dict).
+    model = torch.compile(model)
+
+    return model, ema, optimizer, loss_fn, start_epoch
+
+
+def train(
+    device: torch.device,
+    train_loader: DataLoader,
+    checkpoint_dir: Path,
+    seed: int,
+    stats: NormStats,
+    epochs: int = 100,
+    lr: float = 1e-3,
+    weight_decay: float = 0.05,
+    warmup_epochs: int = 5,
+    grad_clip: float = 1.0,
+    ema_decay: float = 0.9999,
+    resume_from: Path | None = None,
+) -> None:
+    model, ema, optimizer, loss_fn, start_epoch = setup_model(
+        device=device,
+        seed=seed,
+        lr=lr,
+        weight_decay=weight_decay,
+        ema_decay=ema_decay,
+        resume_from=resume_from,
+    )
+
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * epochs
     warmup_steps = steps_per_epoch * warmup_epochs
@@ -112,29 +159,6 @@ def train(
         "%d epochs x %d steps = %d total (warmup %d steps)",
         epochs, steps_per_epoch, total_steps, warmup_steps,
     )
-
-    start_epoch = 0
-    if resume_from is not None:
-        payload = torch.load(resume_from, map_location=device, weights_only=False)
-        model.load_state_dict(payload["model"])
-        ema.module.load_state_dict(payload["ema"])
-        ema.step = int(payload.get("ema_step", 0))
-        if "optimizer" in payload:
-            optimizer.load_state_dict(payload["optimizer"])
-        if "rng_cpu" in payload:
-            torch.set_rng_state(payload["rng_cpu"].cpu())
-        if payload.get("rng_cuda") is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(payload["rng_cuda"])
-        start_epoch = int(payload["epoch"]) + 1
-        logger.info(
-            "resumed from %s (next epoch=%d, ema_step=%d)",
-            resume_from, start_epoch, ema.step,
-        )
-        del payload
-
-    # Compile after any state_dict load so checkpoints are saved/loaded in
-    # uncompiled form (no "_orig_mod." prefix in the on-disk dict).
-    model = torch.compile(model)
 
     global_step = start_epoch * steps_per_epoch
     for epoch in range(start_epoch, epochs):
