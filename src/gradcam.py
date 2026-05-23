@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.cm as cm
+import matplotlib as mpl
 from matplotlib.figure import Figure
 from PIL import Image
 from torchvision import transforms as T
@@ -94,7 +94,7 @@ def make_overlay(
     colormap: str = "jet",
 ) -> Image.Image:
     cam = np.sqrt(cam)  # spread activation — avoids tiny concentrated hot spots
-    heatmap = cm.get_cmap(colormap)(cam)[:, :, :3]
+    heatmap = mpl.colormaps[colormap](cam)[:, :, :3]
     heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(
         pil_img.size, Image.Resampling.BICUBIC
     )
@@ -140,17 +140,23 @@ def compute_guided_gradcam(
         return bwd
 
     silu_modules = [m for m in model.modules() if isinstance(m, nn.SiLU)]
+    original_inplace = [sm.inplace for sm in silu_modules]
+    for sm in silu_modules:
+        sm.inplace = False  # backward hooks reject view+inplace combo
     for i, sm in enumerate(silu_modules):
         handles.append(sm.register_forward_hook(make_fwd(i)))
         handles.append(sm.register_full_backward_hook(make_bwd(i)))  # type: ignore[arg-type]
 
-    x = tensor.detach().clone().requires_grad_(True)
-    output = model(x)
-    model.zero_grad()
-    output[0].backward()
-
-    for h in handles:
-        h.remove()
+    try:
+        x = tensor.detach().clone().requires_grad_(True)
+        output = model(x)
+        model.zero_grad()
+        output[0].backward()
+    finally:
+        for h in handles:
+            h.remove()
+        for sm, was_inplace in zip(silu_modules, original_inplace):
+            sm.inplace = was_inplace
 
     grad = x.grad[0].abs().sum(dim=0)              # type: ignore[union-attr]  # (H, W)
     grad_np = grad.cpu().detach().float().numpy()
