@@ -73,7 +73,7 @@ def cosine_with_warmup(
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
-def train_one_run(
+def train(
     device: torch.device,
     train_loader: DataLoader,
     checkpoint_dir: Path,
@@ -313,8 +313,8 @@ def main() -> None:
         shuffle=True,
     )
 
-    train_one_run(
         device=torch.device(args.device),
+    train(
         train_loader=dl,
         seed=args.seed,
         checkpoint_dir=constants.CHECKPOINT_DIR,
