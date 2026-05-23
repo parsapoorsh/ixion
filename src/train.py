@@ -23,8 +23,12 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+import config
 import constants
+from builders import build_train_transform
+from datasets import ImageLoader, RotationPairDataset
 from models import ModelEMA, RotationModel
+from utils.index import index_files
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -274,19 +278,46 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    if args.invalidate_cache:
-        # TODO: for stats
+    roots = []
+    for ds in config.DATASETS:
+        roots.extend(i for i in ds.train)
 
-    run = RunConfig(
-        device=torch.device(args.device),
+    files = index_files(
+        name="train",
+        roots=roots,
+        cache_dir=constants.INDEX_CACHE_DIR,
+        invalidate_cache=args.invalidate_cache,
+    )
+    im = ImageLoader(
+        files=files,
+        transform=None,
+    )
+    mean, std = compute_stats(im)
+
+    ds = RotationPairDataset(
+        base=im,
+        transform=build_train_transform(
+            mean=mean,
+            std=std,
+            input_size=constants.INPUT_SIZE,
+            resize_size=constants.RESIZE_SIZE,
+        )
+    )
+
+    dl = DataLoader(
+        ds,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
-        seed=args.seed,
+        pin_memory=args.device.startswith("cuda"),
+        shuffle=True,
     )
 
     train_one_run(
-        run,
+        device=torch.device(args.device),
+        train_loader=dl,
+        seed=args.seed,
+        checkpoint_dir=constants.CHECKPOINT_DIR,
         resume_from=args.resume,
     )
 
