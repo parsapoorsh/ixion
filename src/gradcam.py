@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import matplotlib.cm as cm
@@ -35,8 +33,6 @@ from utils.image_io import open_rgb
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
-
-gpu_lock = threading.Lock()
 
 
 def load_cached_stats(cache_dir: Path) -> tuple[tuple, tuple]:
@@ -109,14 +105,12 @@ def make_overlay(pil_img: Image.Image, cam: np.ndarray, alpha: float = 0.65) -> 
     return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
 
 
-def visualise(
+def compute_rotations(
     model: RotationModel,
     pil_img: Image.Image,
     preprocess: T.Compose,
     device: torch.device,
-    title: str,
-    out_path: Path,
-) -> None:
+) -> tuple[list[Image.Image], list[float], list[np.ndarray]]:
     crop = T.Compose([
         T.Resize(constants.RESIZE_SIZE),
         T.CenterCrop(constants.INPUT_SIZE),
@@ -126,19 +120,28 @@ def visualise(
     cams: list[np.ndarray] = []
     displays: list[Image.Image] = []
 
-    with gpu_lock:
-        for angle in constants.ROTATIONS:
-            rotated = crop.rotate(angle) if angle != 0 else crop
-            displays.append(rotated)
+    for angle in constants.ROTATIONS:
+        rotated = crop.rotate(angle) if angle != 0 else crop
+        displays.append(rotated)
 
-            with torch.no_grad():
-                tensor = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
-                prob = float(model(tensor).sigmoid().item())
-            probs.append(prob)
+        with torch.no_grad():
+            tensor = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
+            prob = float(model(tensor).sigmoid().item())
+        probs.append(prob)
 
-            t = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
-            cams.append(compute_gradcam(model, t))
+        t = preprocess(rotated).unsqueeze(0).to(device)  # type: ignore[union-attr]
+        cams.append(compute_gradcam(model, t))
 
+    return displays, probs, cams
+
+
+def visualise(
+    displays: list[Image.Image],
+    probs: list[float],
+    cams: list[np.ndarray],
+    title: str,
+    out_path: Path,
+) -> None:
     pred = int(np.argmax(probs))
 
     fig = Figure(figsize=(10, 10))
@@ -165,13 +168,6 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:1")
     parser.add_argument("--images", type=Path, nargs="+", required=True)
     parser.add_argument("--out-dir", type=Path, default=Path("gradcam_out"))
-    parser.add_argument(
-        "-t",
-        "--thread",
-        type=int,
-        default=1,
-        help="worker threads (GPU work is serialised; threads help I/O and overlay)",
-    )
     args = parser.parse_args()
     args.images = [p for p in args.images if p.is_file()]
 
@@ -190,17 +186,11 @@ def main() -> None:
 
     args.out_dir.mkdir(exist_ok=True)
 
-    def run_one(img_path: Path) -> None:
+    for img_path in args.images:
         pil = open_rgb(img_path)
         out_path = args.out_dir / f"{img_path.stem}_gradcam.png"
-        visualise(model, pil, preprocess, device, img_path.name, out_path)
-
-    if args.thread > 1:
-        with ThreadPoolExecutor(max_workers=args.thread) as pool:
-            list(pool.map(run_one, args.images))
-    else:
-        for img_path in args.images:
-            run_one(img_path)
+        displays, probs, cams = compute_rotations(model, pil, preprocess, device)
+        visualise(displays, probs, cams, img_path.name, out_path)
 
 
 if __name__ == "__main__":
