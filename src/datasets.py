@@ -113,7 +113,9 @@ class RotationPairDataset(Dataset):
         tensor = self.transform(img)
         if rot_idx != 0:
             tensor = TF.rotate(tensor, constants.ROTATIONS[rot_idx], expand=True)
-        return tensor, 1.0 if rot_idx == 0 else 0.0
+
+        prob = 1.0 if rot_idx == 0 else 0.0
+        return tensor, prob
 
 
 def build_train_dataset(
