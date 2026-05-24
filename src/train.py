@@ -42,18 +42,19 @@ class EpochStats:
     grad_norm_sum: float = 0.0
     grad_steps: int = 0
 
-    def update(
+    def merge(
         self,
-        loss: float,
-        n: int,
+        loss_sum: float,
         correct: int,
-        grad_norm: float,
+        grad_norm_sum: float,
+        n: int,
+        steps: int,
     ) -> None:
-        self.loss_sum += loss * n
+        self.loss_sum += loss_sum
         self.correct += correct
         self.seen += n
-        self.grad_norm_sum += grad_norm
-        self.grad_steps += 1
+        self.grad_norm_sum += grad_norm_sum
+        self.grad_steps += steps
 
     @property
     def avg_loss(self) -> float:
@@ -208,6 +209,14 @@ def train(
             leave=False,
             file=sys.stdout,
         )
+        # GPU-side accumulators flushed to epoch_stats at LOG_STEP boundaries
+        # and once at epoch end, so .item() doesn't sync every step.
+        loss_buf = torch.zeros((), device=device)
+        correct_buf = torch.zeros((), device=device, dtype=torch.long)
+        gn_buf = torch.zeros((), device=device)
+        pending_n = 0
+        pending_steps = 0
+
         for imgs, labels in pbar:
             imgs = imgs.to(
                 device,
@@ -240,27 +249,49 @@ def train(
             ema.update(model)
 
             preds = (logits > 0).float()
-            epoch_stats.update(
-                loss=loss.item(),
-                n=imgs.size(0),
-                correct=int((preds == labels).sum().item()),
-                grad_norm=grad_norm.item(),
-            )
+            n = imgs.size(0)
+            loss_buf += loss.detach() * n
+            correct_buf += (preds == labels).sum()
+            gn_buf += grad_norm.detach()
+            pending_n += n
+            pending_steps += 1
 
-            lr_now = optimizer.param_groups[0]["lr"]
-            pbar.set_postfix(
-                acc=f"{epoch_stats.acc:.3f}",
-                loss=f"{epoch_stats.avg_loss:.4f}",
-                lr=f"{lr_now:.2e}",
-                gn=f"{epoch_stats.avg_grad_norm:.2f}",
-            )
             if global_step % constants.LOG_STEP == 0:
+                epoch_stats.merge(
+                    loss_sum=loss_buf.item(),
+                    correct=int(correct_buf.item()),
+                    grad_norm_sum=gn_buf.item(),
+                    n=pending_n,
+                    steps=pending_steps,
+                )
+                loss_buf.zero_()
+                correct_buf.zero_()
+                gn_buf.zero_()
+                pending_n = 0
+                pending_steps = 0
+
+                lr_now = optimizer.param_groups[0]["lr"]
+                pbar.set_postfix(
+                    acc=f"{epoch_stats.acc:.3f}",
+                    loss=f"{epoch_stats.avg_loss:.4f}",
+                    lr=f"{lr_now:.2e}",
+                    gn=f"{epoch_stats.avg_grad_norm:.2f}",
+                )
                 logger.info(
                     "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e grad_norm=%.2f",
                     epoch, global_step, total_steps,
                     epoch_stats.avg_loss, epoch_stats.acc, lr_now, epoch_stats.avg_grad_norm,
                 )
             global_step += 1
+
+        if pending_steps > 0:
+            epoch_stats.merge(
+                loss_sum=loss_buf.item(),
+                correct=int(correct_buf.item()),
+                grad_norm_sum=gn_buf.item(),
+                n=pending_n,
+                steps=pending_steps,
+            )
 
         dt = time.monotonic() - epoch_start
         logger.info(
