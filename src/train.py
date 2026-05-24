@@ -150,7 +150,11 @@ def setup_model(
             torch.set_rng_state(payload["rng_cpu"].cpu())
 
         if payload.get("rng_cuda") is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(payload["rng_cuda"])
+            # map_location=device pulls the saved ByteTensors to CUDA, but
+            # set_rng_state_all requires CPU ByteTensors - move them back.
+            torch.cuda.set_rng_state_all(
+                [s.cpu().to(torch.uint8) for s in payload["rng_cuda"]]
+            )
 
         start_epoch = int(payload["epoch"]) + 1
         logger.info(
