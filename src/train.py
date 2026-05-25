@@ -276,13 +276,13 @@ def train(
 
                 lr_now = optimizer.param_groups[0]["lr"]
                 pbar.set_postfix(
-                    acc=f"{epoch_stats.acc:.3f}",
-                    loss=f"{epoch_stats.avg_loss:.4f}",
+                    acc=f"{epoch_stats.acc:.5f}",
+                    loss=f"{epoch_stats.avg_loss:.5f}",
                     lr=f"{lr_now:.2e}",
-                    gn=f"{epoch_stats.avg_grad_norm:.2f}",
+                    gn=f"{epoch_stats.avg_grad_norm:.5f}",
                 )
                 logger.info(
-                    "epoch %d step %d/%d loss=%.4f acc=%.3f lr=%.2e grad_norm=%.2f",
+                    "epoch %d step %d/%d loss=%.5f acc=%.5f lr=%.2e grad_norm=%.5f",
                     epoch, global_step, total_steps,
                     epoch_stats.avg_loss, epoch_stats.acc, lr_now, epoch_stats.avg_grad_norm,
                 )
