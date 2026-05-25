@@ -392,7 +392,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--epochs",
         type=int,
-        default=20,
+        default=30,
         help="total number of training epochs",
     )
     p.add_argument(
