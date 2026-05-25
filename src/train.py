@@ -175,7 +175,7 @@ def train(
     checkpoint_dir: Path,
     seed: int,
     stats: NormStats,
-    epochs: int = 20,
+    epochs: int,
     lr: float = 3e-4,
     weight_decay: float = 0.1,
     warmup_epochs: int = 5,
@@ -349,6 +349,7 @@ def main(args) -> None:
         seed=args.seed,
         checkpoint_dir=constants.CHECKPOINT_DIR,
         stats=stats,
+        epochs=args.epochs,
         resume_from=args.resume,
     )
 
@@ -387,6 +388,12 @@ if __name__ == "__main__":
         type=int,
         required=True,
         help="torch RNG seed for the training loop",
+    )
+    p.add_argument(
+        "--epochs",
+        type=int,
+        default=20,
+        help="total number of training epochs",
     )
     p.add_argument(
         "--invalidate-cache",
