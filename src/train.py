@@ -31,6 +31,7 @@ import config
 import constants
 from datasets import build_dataset
 from models import ModelEMA, RotationModel
+from sam import SAM, disable_running_stats, enable_running_stats
 from stats import NormStats
 from utils.logsetup import setup_logging
 
@@ -82,11 +83,14 @@ def save_checkpoint(
     # torch.compile() wraps the module and prefixes state_dict keys with
     # "_orig_mod." - unwrap so checkpoints stay portable across compile.
     raw_model = getattr(model, "_orig_mod", model)
+    # Under SAM the real state lives in the wrapped base optimizer; save that
+    # so the on-disk state is plain AdamW and resumes with or without --sam.
+    base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
     payload: dict = {
         "model": raw_model.state_dict(),
         "ema": ema.state_dict(),
         "ema_step": ema.step,
-        "optimizer": optimizer.state_dict(),
+        "optimizer": base_optimizer.state_dict(),
         "rng_cpu": torch.get_rng_state(),
         "rng_cuda": (
             torch.cuda.get_rng_state_all()
@@ -117,6 +121,8 @@ def setup_model(
     lr: float,
     weight_decay: float,
     ema_decay: float,
+    use_sam: bool = False,
+    sam_rho: float = 0.05,
     resume_from: Path | None = None,
 ) -> tuple[nn.Module, ModelEMA, torch.optim.Optimizer, nn.Module, int]:
     torch.manual_seed(seed)
@@ -126,12 +132,23 @@ def setup_model(
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
     ema = ModelEMA(model, decay=ema_decay)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=lr,
-        betas=(0.9, 0.999),
-        weight_decay=weight_decay,
-    )
+    if use_sam:
+        optimizer: torch.optim.Optimizer = SAM(
+            model.parameters(),
+            base_optimizer=torch.optim.AdamW,
+            rho=sam_rho,
+            lr=lr,
+            betas=(0.9, 0.999),
+            weight_decay=weight_decay,
+        )
+        logger.info("using SAM (rho=%.3f) over AdamW", sam_rho)
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            betas=(0.9, 0.999),
+            weight_decay=weight_decay,
+        )
     # Product metric is argmax over the four upright logits; train that
     # ranking directly with group CE (target = upright index 0).
     loss_fn = nn.CrossEntropyLoss()
@@ -145,7 +162,10 @@ def setup_model(
         ema.step = int(payload.get("ema_step", 0))
 
         if "optimizer" in payload:
-            optimizer.load_state_dict(payload["optimizer"])
+            # Saved state is plain base-optimizer (AdamW) state; load it into
+            # the base so resume works whether or not SAM wraps it this run.
+            base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
+            base_optimizer.load_state_dict(payload["optimizer"])
 
         if "rng_cpu" in payload:
             torch.set_rng_state(payload["rng_cpu"].cpu())
@@ -182,6 +202,8 @@ def train(
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
+    use_sam: bool = False,
+    sam_rho: float = 0.05,
     resume_from: Path | None = None,
 ) -> None:
     model, ema, optimizer, loss_fn, start_epoch = setup_model(
@@ -190,6 +212,8 @@ def train(
         lr=lr,
         weight_decay=weight_decay,
         ema_decay=ema_decay,
+        use_sam=use_sam,
+        sam_rho=sam_rho,
         resume_from=resume_from,
     )
 
@@ -255,11 +279,27 @@ def train(
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                grad_clip,
-            )
-            optimizer.step()
+
+            if isinstance(optimizer, SAM):
+                # First pass climbs to the worst-case point; the second pass
+                # recomputes the gradient there and applies the real update.
+                optimizer.first_step(zero_grad=True)
+                disable_running_stats(model)
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                    loss_adv = loss_fn(model(views).view(batch_groups, n_rots), targets)
+                loss_adv.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    grad_clip,
+                )
+                optimizer.second_step(zero_grad=True)
+                enable_running_stats(model)
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    grad_clip,
+                )
+                optimizer.step()
             ema.update(model)
 
             # Train accuracy = group4 (argmax picks upright index 0).
@@ -367,6 +407,8 @@ def main(args) -> None:
         checkpoint_dir=constants.CHECKPOINT_DIR,
         stats=stats,
         epochs=args.epochs,
+        use_sam=args.sam,
+        sam_rho=args.sam_rho,
         resume_from=args.resume,
     )
 
@@ -412,6 +454,17 @@ if __name__ == "__main__":
         type=int,
         default=30,
         help="total number of training epochs",
+    )
+    p.add_argument(
+        "--sam",
+        action="store_true",
+        help="use Sharpness-Aware Minimization over AdamW (2x passes/step, flatter minima)",
+    )
+    p.add_argument(
+        "--sam-rho",
+        type=float,
+        default=0.05,
+        help="SAM neighbourhood radius for the worst-case ascent step",
     )
     p.add_argument(
         "--invalidate-cache",
