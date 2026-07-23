@@ -9,13 +9,19 @@ scale before or after ingestion into Immich.
 
 Trains an EfficientNet-B0 binary classifier (single output neuron, BCEWithLogitsLoss)
 to predict P(upright) for any input image. At inference time, the four 90° rotations
-of an image are tested and the one with the highest upright probability is taken as
-the correct orientation. The model is trained with EMA weights and compiled with
-`torch.compile`.
+are scored with the **same geometry as training** (eval transform, then `TF.rotate`
+on the tensor). The view with the highest upright probability (`best_deg`) is the
+correction; `margin` (top1 − top2) supports abstaining on ambiguous images.
+Ship **EMA** weights. Training uses `torch.compile`.
 
 Training data is ImageNet + COCO (general-purpose image corpora), which gives the
 model diverse texture/content without needing a labelled rotation dataset. Each base
 image yields 4 samples: 1 upright (label 1) + 3 rotated (label 0).
+
+**Product metric:** `group4_acc` (validator) — for each base image, argmax over the
+four rotation scores should pick the upright view. Prefer this over binary single-view
+accuracy when comparing checkpoints. Multi-view ranking **loss** is not used in the
+train loop (would multiply step cost); ranking is eval/infer only.
 
 ## Source layout
 
@@ -57,6 +63,16 @@ venv/bin/python src/validator.py \
     --device cuda --batch-size 256 --num-workers 4 \
     --prefetch-factor 4 --weights ema
 ```
+Logs binary loss/acc/per_class plus `group4_acc` and mean margins on correct vs
+incorrect 4-way picks (same forward count as binary val).
+
+**Browse a directory (optional margin abstain):**
+```
+venv/bin/python src/browse.py \
+    --dir /path/to/photos \
+    --checkpoint checkpoints/epoch_010.pt \
+    --device cuda --abstain-margin 0.15
+```
 
 **GradCAM visualisation:**
 ```
@@ -69,10 +85,15 @@ venv/bin/python src/gradcam.py \
 
 - **No pretrained weights.** The model is trained from scratch; ImageNet weights
   encode strong orientation priors that would bias the classifier.
-- **Only photometric augmentation.** Spatial flips/rotations during training would
-  corrupt the binary label, so augmentation is limited to ColorJitter and RandomGrayscale.
+- **Label-safe augmentation only.** No spatial flips/rotations (would corrupt the
+  binary label). Train uses ColorJitter, RandomGrayscale, and RandomErasing after
+  normalize; backbone uses stochastic depth (`drop_path_rate=0.1`).
+- **Train–serve geometry match.** Train and multi-view infer both do
+  transform → tensor rotate (not PIL-rotate then transform).
 - **EMA weights are the production weights.** Raw training weights are also saved but
   EMA is what you should validate and ship.
+- **Abstain on low margin.** Prefer leaving ambiguous images alone over a forced wrong
+  90° correction (`RotationVote.margin` / browse `--abstain-margin`).
 - **JXL support.** `pillow-jxl-plugin` is registered at import time in `utils/image_io.py`
   so both `.jxl` and standard formats work everywhere without any per-callsite setup.
 - **Stats caching.** Dataset mean/std are computed once, cached to `cache/stats_*.json`,
