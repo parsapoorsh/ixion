@@ -54,6 +54,7 @@ class InferResult:
     corrected: Image.Image
     vote: RotationVote
     best_deg: int
+    abstained: bool = False
     error: str | None = field(default=None)
 
 
@@ -111,6 +112,7 @@ def prefetch_worker(
     stats: NormStats,
     out: queue.Queue,
     bar: tqdm,
+    abstain_margin: float | None,
 ) -> None:
     if device.type == "cuda":
         torch.cuda.set_device(device)
@@ -125,14 +127,23 @@ def prefetch_worker(
                 mean=stats.mean,
                 std=stats.std,
             )
-            best_deg = max(vote.probs, key=lambda d: vote.probs[d])
-            corrected = original.rotate(-best_deg, expand=True)
+            best_deg = vote.best_deg
+            abstained = (
+                abstain_margin is not None
+                and vote.should_abstain(abstain_margin)
+            )
+            # Low margin: keep original (no auto-rotate).
+            if abstained:
+                corrected = original
+            else:
+                corrected = original.rotate(-best_deg, expand=True)
             result: InferResult = InferResult(
                 path=path,
                 original=original,
                 corrected=corrected,
                 vote=vote,
                 best_deg=best_deg,
+                abstained=abstained,
             )
         except Exception as exc:
             blank = Image.new("RGB", (224, 224), color=(30, 30, 30))
@@ -143,6 +154,8 @@ def prefetch_worker(
                 vote=RotationVote(
                     probs={0: 0.0, 90: 0.0, 180: 0.0, 270: 0.0},
                     normalized_probs={0: 0.25, 90: 0.25, 180: 0.25, 270: 0.25},
+                    best_deg=0,
+                    margin=0.0,
                     angle=0.0,
                 ),
                 best_deg=0,
@@ -167,9 +180,13 @@ def show_result(result: InferResult, index: int, total: int) -> None:
     prob_str = "  ".join(
         f"{deg}°: {prob:.3f}" for deg, prob in sorted(result.vote.normalized_probs.items())
     )
+    if result.abstained:
+        decision = f"ABSTAIN (margin={result.vote.margin:.3f})"
+    else:
+        decision = f"correction: {result.best_deg}° (margin={result.vote.margin:.3f})"
     title = (
         f"[{index}/{total}]  {result.path.name}"
-        f"  →  correction: {result.best_deg}°"
+        f"  →  {decision}"
         f"  |  {prob_str}"
     )
 
@@ -232,13 +249,22 @@ def main(args: argparse.Namespace) -> None:
 
     worker = threading.Thread(
         target=prefetch_worker,
-        args=(paths, model, device, stats, result_queue, bar),
+        args=(
+            paths,
+            model,
+            device,
+            stats,
+            result_queue,
+            bar,
+            args.abstain_margin,
+        ),
         daemon=True,
     )
     worker.start()
 
     shown = 0
     skipped = 0
+    abstained = 0
     processed = 0
     while True:
         item = result_queue.get()
@@ -258,13 +284,17 @@ def main(args: argparse.Namespace) -> None:
             continue
 
         shown += 1
+        if item.abstained:
+            abstained += 1
 
         if item.error:
             tqdm.write(f"[{processed}/{len(paths)}]  {item.path}  ERROR: {item.error}")
         else:
+            status = "abstain" if item.abstained else f"best={item.best_deg}°"
             tqdm.write(
                 f"[{processed}/{len(paths)}]  {item.path.name}"
-                f"  best={item.best_deg}°"
+                f"  {status}"
+                f"  margin={item.vote.margin:.3f}"
                 f"  conf={best_norm:.3f}"
                 f"  norm={{{', '.join(f'{d}°:{p:.3f}' for d, p in sorted(item.vote.normalized_probs.items()))}}}"
             )
@@ -273,7 +303,11 @@ def main(args: argparse.Namespace) -> None:
 
     bar.close()
     worker.join()
-    print(f"\nDone — displayed {shown} / {len(paths)} image(s)  ({skipped} skipped, conf ≥ {args.conf_threshold}).")
+    print(
+        f"\nDone — displayed {shown} / {len(paths)} image(s)"
+        f"  ({skipped} skipped conf ≥ {args.conf_threshold},"
+        f" {abstained} abstained on margin)."
+    )
 
 
 if __name__ == "__main__":
@@ -309,6 +343,16 @@ if __name__ == "__main__":
         type=float,
         default=0.95,
         dest="conf_threshold",
-        help="skip images where max rotation confidence exceeds this value (default: 0.95)",
+        help="skip display when max L1-normalised rotation share exceeds this",
+    )
+    p.add_argument(
+        "--abstain-margin",
+        type=float,
+        default=None,
+        dest="abstain_margin",
+        help=(
+            "if set, leave image unrotated when top1-top2 raw P(upright) "
+            "margin is below this (e.g. 0.15); default: always apply argmax"
+        ),
     )
     main(p.parse_args())
