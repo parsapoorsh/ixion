@@ -18,6 +18,7 @@ class RotationModel(nn.Module):
         self,
         pretrained: bool = False,
         drop_rate: float = 0.2,
+        drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()
         self.backbone = timm.create_model(
@@ -25,6 +26,7 @@ class RotationModel(nn.Module):
             pretrained=pretrained,
             num_classes=0,
             global_pool="avg",
+            drop_path_rate=drop_path_rate,
         )
         feat_dim: int = self.backbone.num_features  # 1280 # pyright: ignore[reportAssignmentType]
         self.head = nn.Sequential(
