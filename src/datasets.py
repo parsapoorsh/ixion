@@ -1,14 +1,14 @@
-"""DatasetSpec, image loading, the rotation pair wrapper, and the
-concatenated train/val dataset builders.
+"""DatasetSpec, image loading, rotation wrappers, and train/val builders.
 
 Image opening is delegated to image_io.open_rgb so the JXL handler and the
 truncated-image tolerance are registered in exactly one place.
 
-Each base image yields four training samples - one per rotation in
-{0, 90, 180, 270}. The sample index is (image_idx, rotation_idx). The label
-is binary: 1.0 when the view is upright (rotation 0), else 0.0 - so each
-base image contributes one positive and three negatives. Filesystem scanning
-lives in utils.index; transform recipes live in builders.py.
+Train uses ``RotationGroupDataset``: each item is all four 90° views of one
+base image (shared train transform, then ``TF.rotate``), for group
+cross-entropy over P(upright) logits. Val uses ``RotationPairDataset``:
+flattened single-view samples with binary upright labels (one positive and
+three negatives per base), matching the validator's group4 bookkeeping.
+Filesystem scanning lives in utils.index; transform recipes live in builders.py.
 """
 
 from __future__ import annotations
@@ -78,6 +78,22 @@ class ImageLoader(Dataset):
         return img
 
 
+def _load_base_image(base: ImageLoader, img_idx: int) -> Image.Image:
+    """Load ``base[img_idx]``, skipping unreadable files by wrapping around."""
+    n = len(base)
+    for offset in range(n):
+        probe = (img_idx + offset) % n
+        try:
+            return base[probe]  # type: ignore[return-value]
+        except (UnidentifiedImageError, OSError) as exc:
+            logger.warning(
+                "skipping unreadable image %s: %s",
+                base.files[probe],
+                exc,
+            )
+    raise RuntimeError("no readable images remain in the dataset")
+
+
 class RotationPairDataset(Dataset):
     """Wraps a base image source so each item is (image, is_upright_label).
 
@@ -95,25 +111,45 @@ class RotationPairDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, float]:
         img_idx, rot_idx = divmod(idx, len(constants.ROTATIONS))
-        n = len(self.base)
-        for offset in range(n):
-            probe = (img_idx + offset) % n
-            try:
-                img = self.base[probe]
-                break
-            except (UnidentifiedImageError, OSError) as exc:
-                logger.warning(
-                    "skipping unreadable image %s: %s",
-                    self.base.files[probe], exc,
-                )
-        else:
-            raise RuntimeError("no readable images remain in the dataset")
+        img = _load_base_image(self.base, img_idx)
         tensor = self.transform(img)
         if rot_idx != 0:
-            tensor = TF.rotate(tensor, constants.ROTATIONS[rot_idx], expand=True)
+            tensor = TF.rotate(
+                tensor,
+                constants.ROTATIONS[rot_idx],
+                expand=True,
+            )
 
         prob = 1.0 if rot_idx == 0 else 0.0
         return tensor, prob
+
+
+class RotationGroupDataset(Dataset):
+    """One item = all four rotations of a single base image.
+
+    Transform runs once (shared crop / jitter / erase), then each view is
+    produced with ``TF.rotate`` — same geometry as pair training and infer.
+    Returns a ``(4, C, H, W)`` tensor ordered as ``constants.ROTATIONS``;
+    upright is index 0 for group cross-entropy.
+    """
+
+    def __init__(self, base: ImageLoader, transform: Callable) -> None:
+        self.base = base
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        img = _load_base_image(self.base, idx)
+        tensor = self.transform(img)
+        views: list[torch.Tensor] = []
+        for rot_idx, deg in enumerate(constants.ROTATIONS):
+            if rot_idx == 0:
+                views.append(tensor)
+            else:
+                views.append(TF.rotate(tensor, deg, expand=True))
+        return torch.stack(views, dim=0)
 
 
 def build_dataset(
@@ -125,7 +161,7 @@ def build_dataset(
     prefetch_factor: int,
     stats: NormStats | None = None,
     invalidate_cache: bool = False,
-) -> tuple[RotationPairDataset, NormStats]:
+) -> tuple[RotationGroupDataset | RotationPairDataset, NormStats]:
     roots = [
         root
         for ds in datasets
@@ -157,7 +193,7 @@ def build_dataset(
         if split == "train"
         else build_eval_transform(mean=stats.mean, std=stats.std)
     )
-    return RotationPairDataset(
-        base=ImageLoader(files=files),
-        transform=transform,
-    ), stats
+    base = ImageLoader(files=files)
+    if split == "train":
+        return RotationGroupDataset(base=base, transform=transform), stats
+    return RotationPairDataset(base=base, transform=transform), stats

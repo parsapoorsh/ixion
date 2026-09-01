@@ -4,9 +4,12 @@ Run from the project root:
     venv/bin/python src/train.py --device cuda --batch-size N \\
         --num-workers N --prefetch-factor N
 
-Optimisation knobs are plain kwargs on ``train_one_run`` with the
-project's defaults baked in. ``RunConfig`` carries the process/IO
-knobs. Validation is a separate process - see ``validator.py``.
+Training uses group cross-entropy: each base image contributes all four
+90° views, the model scores P(upright) per view, and the loss is CE over
+those four logits with target index 0 (upright). ``--batch-size`` is the
+number of views through the model per step and must be divisible by 4.
+
+Validation is a separate process - see ``validator.py``.
 """
 
 from __future__ import annotations
@@ -129,11 +132,9 @@ def setup_model(
         betas=(0.9, 0.999),
         weight_decay=weight_decay,
     )
-    # Inference picks the rotation with the highest upright logit (argmax
-    # over 4 views), so the absolute decision threshold doesn't matter -
-    # only the relative ranking. Skip pos_weight to avoid the flat-valley
-    # loss surface that caused per-class accuracy to oscillate.
-    loss_fn = nn.BCEWithLogitsLoss()
+    # Product metric is argmax over the four upright logits; train that
+    # ranking directly with group CE (target = upright index 0).
+    loss_fn = nn.CrossEntropyLoss()
 
     start_epoch = 0
     if resume_from is not None:
@@ -221,13 +222,17 @@ def train(
         pending_n = 0
         pending_steps = 0
 
-        for imgs, labels in pbar:
-            imgs = imgs.to(
-                device,
-                non_blocking=True,
-                memory_format=torch.channels_last,
-            )
-            labels = labels.to(device, non_blocking=True).float()
+        n_rots = len(constants.ROTATIONS)
+        for groups in pbar:
+            # groups: (B, 4, C, H, W) — B base images, four shared-transform views
+            groups = groups.to(device, non_blocking=True)
+            batch_groups, _, channels, height, width = groups.shape
+            views = groups.reshape(
+                batch_groups * n_rots,
+                channels,
+                height,
+                width,
+            ).contiguous(memory_format=torch.channels_last)
 
             scale = cosine_with_warmup(
                 global_step,
@@ -239,9 +244,14 @@ def train(
             for group in optimizer.param_groups:
                 group["lr"] = lr * scale
 
+            targets = torch.zeros(
+                batch_groups,
+                dtype=torch.long,
+                device=device,
+            )
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
-                logits = model(imgs)
-                loss = loss_fn(logits, labels)
+                logits = model(views).view(batch_groups, n_rots)
+                loss = loss_fn(logits, targets)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -252,10 +262,10 @@ def train(
             optimizer.step()
             ema.update(model)
 
-            preds = (logits > 0).float()
-            n = imgs.size(0)
+            # Train accuracy = group4 (argmax picks upright index 0).
+            n = batch_groups
             loss_buf += loss.detach() * n
-            correct_buf += (preds == labels).sum()
+            correct_buf += (logits.argmax(dim=-1) == 0).sum()
             gn_buf += grad_norm.detach()
             pending_n += n
             pending_steps += 1
@@ -276,13 +286,13 @@ def train(
 
                 lr_now = optimizer.param_groups[0]["lr"]
                 pbar.set_postfix(
-                    acc=f"{epoch_stats.acc:.5f}",
+                    group4=f"{epoch_stats.acc:.5f}",
                     loss=f"{epoch_stats.avg_loss:.5f}",
                     lr=f"{lr_now:.2e}",
                     gn=f"{epoch_stats.avg_grad_norm:.5f}",
                 )
                 logger.info(
-                    "epoch %d step %d/%d loss=%.5f acc=%.5f lr=%.2e grad_norm=%.5f",
+                    "epoch %d step %d/%d loss=%.5f group4_acc=%.5f lr=%.2e grad_norm=%.5f",
                     epoch, global_step, total_steps,
                     epoch_stats.avg_loss, epoch_stats.acc, lr_now, epoch_stats.avg_grad_norm,
                 )
@@ -323,6 +333,13 @@ def main(args) -> None:
     setup_logging(constants.LOGS_DIR)
 
     device = torch.device(args.device)
+    n_rots = len(constants.ROTATIONS)
+    if args.batch_size % n_rots != 0:
+        raise SystemExit(
+            f"--batch-size must be divisible by {n_rots} "
+            f"(got {args.batch_size}); it counts views through the model"
+        )
+    groups_per_batch = args.batch_size // n_rots
 
     ds, stats = build_dataset(
         split="train",
@@ -336,7 +353,7 @@ def main(args) -> None:
 
     dl = DataLoader(
         ds,
-        batch_size=args.batch_size,
+        batch_size=groups_per_batch,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         pin_memory=device.type == "cuda",
@@ -369,7 +386,8 @@ if __name__ == "__main__":
         "--batch-size",
         type=int,
         required=True,
-        help="images per training step",
+        help="views through the model per step (must be divisible by 4; "
+             "groups per step = batch-size / 4)",
     )
     p.add_argument(
         "--num-workers",
