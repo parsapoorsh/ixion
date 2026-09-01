@@ -2,7 +2,7 @@
 
 Shows the image at all 4 rotations; for each, displays the model's
 P(upright) and a GradCAM heatmap of the upright logit.
-Target layer: backbone.conv_head (last 1x1 conv before global pool,
+Target layer: backbone.conv_head (last 1x1 conv before attention pool,
 320->1280 channels, spatial resolution ~7x7 for 224x224 input).
 
 Usage:
