@@ -40,7 +40,7 @@ src/
     rotation.py  — RotationModel (EfficientNet-B0 + LayerNorm/Dropout/Linear head)
     ema.py       — ModelEMA (exponential moving average shadow)
   utils/
-    image_io.py  — PIL open with EXIF orientation + truncated-image tolerance
+    image_io.py  — PIL open with JXL plugin + EXIF orientation + truncated-image tolerance
     index.py     — recursive file scanner with compressed JSON cache
     logsetup.py  — timestamped log file + stderr handler
 ```
@@ -94,6 +94,8 @@ venv/bin/python src/gradcam.py \
   EMA is what you should validate and ship.
 - **Abstain on low margin.** Prefer leaving ambiguous images alone over a forced wrong
   90° correction (`RotationVote.margin` / browse `--abstain-margin`).
+- **JXL support.** `pillow-jxl-plugin` is registered at import time in `utils/image_io.py`
+  so both `.jxl` and standard formats work everywhere without any per-callsite setup.
 - **Stats caching.** Dataset mean/std are computed once, cached to `cache/stats_*.json`,
   and reloaded on subsequent runs. Use `--invalidate-cache` to force a recompute.
 - **Checkpoint portability.** `torch.compile` wraps parameters under `_orig_mod.*`;
@@ -110,5 +112,5 @@ Configured in `src/config.py`. Currently points to ImageNet 2017 and COCO 2017 a
 
 ## Dependencies
 
-Python 3.12, PyTorch 2.11 + CUDA 12.8, torchvision, timm, Pillow.
+Python 3.12, PyTorch 2.11 + CUDA 12.8, torchvision, timm, Pillow + pillow-jxl-plugin.
 See `requirements.txt` for pinned versions.

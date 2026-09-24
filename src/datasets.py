@@ -1,7 +1,7 @@
 """DatasetSpec, image loading, rotation wrappers, and train/val builders.
 
-Image opening is delegated to image_io.open_rgb so the truncated-image
-tolerance is registered in exactly one place.
+Image opening is delegated to image_io.open_rgb so the JXL handler and the
+truncated-image tolerance are registered in exactly one place.
 
 Train uses ``RotationGroupDataset``: each item is all four 90° views of one
 base image (shared train transform, then ``TF.rotate``), for group
