@@ -37,7 +37,6 @@ IMAGE_EXTS = frozenset({
     ".webp",
     ".bmp",
     ".tiff", ".tif",
-    ".jxl",
 })
 PREFETCH_SIZE = 10
 _DONE = object()  # sentinel pushed by worker when exhausted
