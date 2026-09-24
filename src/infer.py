@@ -1,9 +1,10 @@
 """Single-pass inference for the binary upright detector.
 
-The model has one output neuron. A single forward pass yields a logit;
-its sigmoid is the probability the image is upright (rotation 0°).
+The model has one output neuron. A single forward pass yields an upright
+score; its sigmoid is available for legacy single-view callers but is not
+calibrated by the four-view group cross-entropy objective.
 
-At product time, score all four 90° views and take argmax of P(upright).
+At product time, score all four 90° views and apply softmax across them.
 When the top-1 vs top-2 margin is small, prefer abstaining rather than
 forcing a correction (uniform texture, circles, symmetric content).
 """
@@ -26,18 +27,18 @@ from constants import ROTATIONS
 class RotationVote:
     """Per-rotation upright probabilities and derived product fields.
 
-    `probs` maps each rotation in degrees (0/90/180/270) to the model's
-    P(upright) for the image rotated by that amount (same geometry as
-    training: transform first, then TF.rotate).
+    `probs` maps each rotation in degrees (0/90/180/270) to its four-view
+    softmax probability (same geometry as training: transform first, then
+    ``TF.rotate``).
 
-    `normalized_probs` is L1-normalised `probs` so the four values sum to 1.
+    `normalized_probs` is retained as an alias of `probs` for callers.
 
-    `best_deg` is argmax of raw `probs` — the counter-clockwise rotation
+    `best_deg` is argmax of `probs` — the counter-clockwise rotation
     that should be applied, matching ``TF.rotate``, to bring the image upright.
 
-    `margin` is top1 − top2 raw probability; small values mean ambiguous.
+    `margin` is top1 − top2 softmax probability; small values mean ambiguous.
 
-    `angle` is the weighted circular mean of the raw `probs` votes
+    `angle` is the weighted circular mean of the `probs` votes
     (secondary; prefer `best_deg` for discrete 90° correction).
     """
 
@@ -53,11 +54,7 @@ class RotationVote:
 
 
 def _vote_from_probs(probs: np.ndarray) -> RotationVote:
-    prob_sum = float(probs.sum())
-    if prob_sum > 0:
-        norm = probs / prob_sum
-    else:
-        norm = np.ones_like(probs) / len(probs)
+    norm = probs
 
     order = np.argsort(probs)
     top1_i = int(order[-1])
@@ -129,6 +126,6 @@ def predict_rotations(
 
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         logits = model(batch)
-    probs = logits.float().sigmoid().reshape(-1).cpu().numpy()
+    probs = logits.float().softmax(dim=0).reshape(-1).cpu().numpy()
 
     return _vote_from_probs(probs)

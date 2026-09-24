@@ -5,7 +5,7 @@ at the model's preprocess sizes, and runs one validation pass. No
 autocast, no async machinery, no train-loop coupling - point it at
 any checkpoint with any device.
 
-Reports binary metrics and product-oriented group4 accuracy (argmax
+Reports group cross-entropy and product-oriented group4 accuracy (argmax
 over the four synthetic rotations of each base image) from the same
 forward pass — no extra model work.
 """
@@ -39,23 +39,15 @@ def run_validation(
     loader: DataLoader,
     device: torch.device,
     max_batches: int | None = None,
-) -> tuple[float, float, list[float], float, float, float, int]:
-    """Returns binary metrics plus group4 stats.
+) -> tuple[float, float, float, float, int]:
+    """Return group CE, group4 accuracy, margin means, and group count.
 
-    Binary: mean loss, overall accuracy, per-class accuracy
-    (index 0 = rotated, 1 = upright).
-
-    Group4 (from the same stream; RotationPairDataset is ordered as
-    base0-rot0..3, base1-rot0..3, ... when shuffle=False):
-    group4_acc, mean_margin on correct groups, mean_margin on incorrect
-    groups, number of complete groups scored.
+    ``RotationPairDataset`` is ordered as base0-rot0..3,
+    base1-rot0..3, and so on when ``shuffle=False``.
     """
     model.train(False)
-    correct = torch.zeros(2, device=device)
-    seen = torch.zeros(2, device=device)
     total_loss = 0.0
-    total_n = 0
-    loss_fn = nn.BCEWithLogitsLoss()
+    loss_fn = nn.CrossEntropyLoss(reduction="sum")
     n_batches = len(loader) if max_batches is None else min(len(loader), max_batches)
 
     # Carry logits across batch boundaries so batch_size need not be % 4.
@@ -68,15 +60,17 @@ def run_validation(
     margin_bad_n = 0
 
     def flush_groups() -> None:
-        nonlocal group4_correct, group4_total
+        nonlocal group4_correct, group4_total, total_loss
         nonlocal margin_ok_sum, margin_bad_sum, margin_ok_n, margin_bad_n
         while len(logit_buf) >= N_ROTS:
             chunk = torch.stack(logit_buf[:N_ROTS])
             del logit_buf[:N_ROTS]
-            # Training labels: rot 0 is upright. Product pick: argmax logit.
-            probs = chunk.sigmoid()
+            # Training target: rot 0 is upright. Product pick: argmax logit.
+            probs = chunk.softmax(dim=0)
             pred = int(probs.argmax().item())
-            # top1 - top2 margin on sigmoid probs
+            target = torch.zeros(1, dtype=torch.long, device=device)
+            total_loss += float(loss_fn(chunk.unsqueeze(0), target).item())
+            # top1 - top2 margin on four-view softmax probabilities.
             sorted_p, _ = probs.sort(descending=True)
             margin = float((sorted_p[0] - sorted_p[1]).item())
             ok = pred == 0
@@ -89,21 +83,11 @@ def run_validation(
                 margin_bad_sum += margin
                 margin_bad_n += 1
 
-    for batch_idx, (imgs, labels) in enumerate(loader):
+    for batch_idx, batch in enumerate(loader):
         if max_batches is not None and batch_idx >= max_batches:
             break
-        imgs = imgs.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True).float()
+        imgs = batch[0].to(device, non_blocking=True)
         logits = model(imgs)
-        loss = loss_fn(logits, labels)
-        preds = (logits > 0).float()
-        for c in range(2):
-            mask = labels == c
-            seen[c] += mask.sum()
-            correct[c] += (preds[mask] == c).sum()
-
-        total_loss += loss.item() * imgs.size(0)
-        total_n += imgs.size(0)
 
         for logit in logits.detach().float().reshape(-1):
             logit_buf.append(logit)
@@ -112,10 +96,9 @@ def run_validation(
         if batch_idx % constants.LOG_STEP == 0:
             g4 = group4_correct / max(1, group4_total)
             logger.info(
-                "validation batch %d/%d running_acc=%.4f group4_acc=%.4f",
+                "validation batch %d/%d group4_acc=%.4f",
                 batch_idx,
                 n_batches,
-                (correct.sum() / seen.sum().clamp(min=1)).item(),
                 g4,
             )
 
@@ -125,17 +108,13 @@ def run_validation(
             len(logit_buf),
         )
 
-    loss = total_loss / max(1, total_n)
-    acc = (correct.sum() / seen.sum().clamp(min=1)).item()
-    per_class = (correct / seen.clamp(min=1)).cpu().tolist()
+    loss = total_loss / max(1, group4_total)
     group4_acc = group4_correct / max(1, group4_total)
     mean_margin_ok = margin_ok_sum / max(1, margin_ok_n)
     mean_margin_bad = margin_bad_sum / max(1, margin_bad_n)
 
     return (
         loss,
-        acc,
-        per_class,
         group4_acc,
         mean_margin_ok,
         mean_margin_bad,
@@ -215,8 +194,6 @@ def validate_checkpoint(
     t0 = time.monotonic()
     (
         loss,
-        acc,
-        per_class,
         group4_acc,
         mean_margin_ok,
         mean_margin_bad,
@@ -229,13 +206,10 @@ def validate_checkpoint(
     )
     dt = time.monotonic() - t0
     logger.info(
-        "checkpoint %s -> loss=%.4f acc=%.4f per_class=%s "
-        "group4_acc=%.4f mean_margin_ok=%.4f mean_margin_bad=%.4f "
-        "group4_n=%d in %.0fs",
+        "checkpoint %s -> group_ce=%.4f group4_acc=%.4f "
+        "mean_margin_ok=%.4f mean_margin_bad=%.4f group4_n=%d in %.0fs",
         checkpoint_path.name,
         loss,
-        acc,
-        per_class,
         group4_acc,
         mean_margin_ok,
         mean_margin_bad,
