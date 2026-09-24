@@ -343,7 +343,7 @@ if __name__ == "__main__":
         type=float,
         default=0.95,
         dest="conf_threshold",
-        help="skip display when max L1-normalised rotation share exceeds this",
+        help="skip display when max four-view softmax probability exceeds this",
     )
     p.add_argument(
         "--abstain-margin",
@@ -351,7 +351,7 @@ if __name__ == "__main__":
         default=None,
         dest="abstain_margin",
         help=(
-            "if set, leave image unrotated when top1-top2 raw P(upright) "
+            "if set, leave image unrotated when the top1-top2 softmax "
             "margin is below this (e.g. 0.15); default: always apply argmax"
         ),
     )
