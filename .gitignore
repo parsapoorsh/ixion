@@ -171,3 +171,5 @@ examples/
 # model checkpoints
 *.onnx
 *.pt
+
+/examples
