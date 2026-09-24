@@ -33,6 +33,27 @@ logger = logging.getLogger(__name__)
 N_ROTS = len(constants.ROTATIONS)
 
 
+def _log_coverage_curve(margins: list[float], corrects: list[bool]) -> None:
+    """Log accuracy and coverage at fixed abstention thresholds."""
+    margin_t = torch.tensor(margins, dtype=torch.float64)
+    ok_t = torch.tensor(corrects, dtype=torch.bool)
+    total = len(margins)
+    logger.info("margin threshold -> coverage / accuracy:")
+    for threshold in (0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50):
+        kept = margin_t >= threshold
+        n = int(kept.sum())
+        if n == 0:
+            continue
+        acc = float(ok_t[kept].float().mean())
+        logger.info(
+            "  margin>=%.2f  coverage=%.3f  acc=%.4f  (n=%d)",
+            threshold,
+            n / total,
+            acc,
+            n,
+        )
+
+
 @torch.no_grad()
 def run_validation(
     model: nn.Module,
@@ -58,6 +79,8 @@ def run_validation(
     margin_bad_sum = 0.0
     margin_ok_n = 0
     margin_bad_n = 0
+    margins: list[float] = []
+    corrects: list[bool] = []
 
     def flush_groups() -> None:
         nonlocal group4_correct, group4_total, total_loss
@@ -74,6 +97,8 @@ def run_validation(
             sorted_p, _ = probs.sort(descending=True)
             margin = float((sorted_p[0] - sorted_p[1]).item())
             ok = pred == 0
+            margins.append(margin)
+            corrects.append(ok)
             group4_total += 1
             if ok:
                 group4_correct += 1
@@ -107,6 +132,9 @@ def run_validation(
             "dropped %d trailing val samples not forming a full rotation group",
             len(logit_buf),
         )
+
+    if margins:
+        _log_coverage_curve(margins, corrects)
 
     loss = total_loss / max(1, group4_total)
     group4_acc = group4_correct / max(1, group4_total)
