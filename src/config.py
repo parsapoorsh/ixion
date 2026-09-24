@@ -12,7 +12,7 @@ from datasets import DatasetSpec
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
-PATH_TO_DATASETS = Path("/media/poweruser/data/2-stuff/datasets")
+PATH_TO_DATASETS = Path("/mnt/archive/2-stuff/datasets")
 
 DATASETS = [
     DatasetSpec(
