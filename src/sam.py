@@ -63,9 +63,9 @@ class SAM(torch.optim.Optimizer):
     def second_step(self, zero_grad: bool = False) -> None:
         for group in self.param_groups:
             for p in group["params"]:
-                if p.grad is None or "e_w" not in self.state[p]:
+                if "e_w" not in self.state[p]:
                     continue
-                p.sub_(self.state[p]["e_w"])  # back to the original weights
+                p.sub_(self.state[p].pop("e_w"))  # back to the original weights
         self.base_optimizer.step()  # real update with the worst-case gradient
         if zero_grad:
             self.zero_grad(set_to_none=True)
