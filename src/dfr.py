@@ -37,7 +37,7 @@ from tqdm.auto import tqdm
 import config
 import constants
 from builders import build_train_transform
-from datasets import ImageLoader, RotationPairDataset
+from datasets import ImageLoader, RotationGroupDataset
 from models import RotationModel
 from stats import NormStats
 from utils.index import index_files
@@ -114,7 +114,7 @@ def build_head_loader(
     prefetch_factor: int,
     invalidate_cache: bool,
 ) -> DataLoader:
-    """Index the reweighting roots and wrap them as a rotation-pair loader.
+    """Index the reweighting roots and wrap them as a rotation-group loader.
 
     Indexed under its own cache name so it never collides with the main
     train/val file indexes.
@@ -126,16 +126,16 @@ def build_head_loader(
         invalidate_cache=invalidate_cache,
     )
     transform = build_train_transform(mean=stats.mean, std=stats.std)
-    dataset = RotationPairDataset(
+    dataset = RotationGroupDataset(
         base=ImageLoader(files=files),
         transform=transform,
     )
-    logger.info("DFR reweighting set: %d files -> %d pairs", len(files), len(dataset))
+    logger.info("DFR reweighting set: %d files -> %d groups", len(files), len(dataset))
     return DataLoader(
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
         pin_memory=device.type == "cuda",
         shuffle=True,
     )
@@ -148,13 +148,12 @@ def retrain_head(
     epochs: int,
     lr: float,
     weight_decay: float,
-    pos_weight: float,
     grad_clip: float,
 ) -> None:
     """Retrain the head only, with the backbone frozen in eval mode.
 
-    ``pos_weight`` rebalances the 1-upright-to-3-rotated class ratio so the
-    refit head is not biased toward the majority (rotated) class.
+    Each group contributes all four rotations; the head is trained with
+    group cross-entropy (target index 0), matching the main training loop.
     """
     optimizer = torch.optim.AdamW(
         model.head.parameters(),
@@ -162,9 +161,8 @@ def retrain_head(
         betas=(0.9, 0.999),
         weight_decay=weight_decay,
     )
-    loss_fn = nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor(pos_weight, device=device),
-    )
+    loss_fn = nn.CrossEntropyLoss()
+    n_rots = len(constants.ROTATIONS)
 
     for epoch in range(epochs):
         model.head.train()
@@ -180,38 +178,48 @@ def retrain_head(
             leave=False,
             file=sys.stdout,
         )
-        for step, (imgs, labels) in enumerate(pbar):
-            imgs = imgs.to(
-                device,
-                non_blocking=True,
-                memory_format=torch.channels_last,
-            )
-            labels = labels.to(device, non_blocking=True).float()
+        for step, groups in enumerate(pbar):
+            groups = groups.to(device, non_blocking=True)
+            batch_groups, _, channels, height, width = groups.shape
+            views = groups.reshape(
+                batch_groups * n_rots,
+                channels,
+                height,
+                width,
+            ).contiguous(memory_format=torch.channels_last)
 
+            targets = torch.zeros(
+                batch_groups,
+                dtype=torch.long,
+                device=device,
+            )
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-                logits = model(imgs)
-                loss = loss_fn(logits, labels)
+                logits = model(views).view(batch_groups, n_rots)
+                loss = loss_fn(logits, targets)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.head.parameters(), grad_clip)
             optimizer.step()
 
-            n = imgs.size(0)
+            n = batch_groups
             loss_sum += float(loss.detach()) * n
-            correct += int(((logits > 0).float() == labels).sum())
+            correct += int((logits.detach().argmax(dim=-1) == 0).sum())
             seen += n
 
             if step % constants.LOG_STEP == 0:
                 pbar.set_postfix(
-                    acc=f"{correct / max(1, seen):.5f}",
+                    group4=f"{correct / max(1, seen):.5f}",
                     loss=f"{loss_sum / max(1, seen):.5f}",
                 )
 
         dt = time.monotonic() - epoch_start
         logger.info(
-            "dfr epoch %d done in %.0fs: loss=%.5f acc=%.5f",
-            epoch, dt, loss_sum / max(1, seen), correct / max(1, seen),
+            "dfr epoch %d done in %.0fs: loss=%.5f group4_acc=%.5f",
+            epoch,
+            dt,
+            loss_sum / max(1, seen),
+            correct / max(1, seen),
         )
 
 
@@ -232,6 +240,7 @@ def save_dfr_checkpoint(
         "ema": sd,
         "stats": {"mean": list(stats.mean), "std": list(stats.std)},
         "epoch": "dfr",
+        "pooling": model.pooling,
         "dfr_source": str(source_checkpoint),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +283,6 @@ def main(args) -> None:
         epochs=args.epochs,
         lr=args.lr,
         weight_decay=args.weight_decay,
-        pos_weight=args.pos_weight,
         grad_clip=args.grad_clip,
     )
 
@@ -327,7 +335,7 @@ if __name__ == "__main__":
         "--batch-size",
         type=int,
         required=True,
-        help="images per step",
+        help="base-image groups per step",
     )
     p.add_argument(
         "--num-workers",
@@ -358,12 +366,6 @@ if __name__ == "__main__":
         type=float,
         default=1e-4,
         help="head weight decay",
-    )
-    p.add_argument(
-        "--pos-weight",
-        type=float,
-        default=3.0,
-        help="BCE positive-class weight; 3.0 balances the 1:3 upright:rotated ratio",
     )
     p.add_argument(
         "--grad-clip",
