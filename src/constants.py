@@ -26,3 +26,9 @@ LOG_STEP = 50
 INPUT_SIZE = 224
 RESIZE_SIZE = 232
 
+# The stats pass decodes a seeded fraction of the train split rather than
+# every file, which keeps mean/std cheap and stable. These are part of the
+# stats cache fingerprint, so changing them needs --invalidate-cache.
+STATS_SAMPLE_FRACTION = 0.20
+STATS_SAMPLE_SEED = 0
+

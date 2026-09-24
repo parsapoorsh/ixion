@@ -15,13 +15,23 @@ from PIL import Image, ImageFile, ImageOps
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
-def open_rgb(path: str | Path) -> Image.Image:
+def open_rgb(
+    path: str | Path,
+    preview_size: tuple[int, int] | None = None,
+) -> Image.Image:
     """Open ``path``, apply its EXIF orientation, and return it as RGB.
 
     Camera files frequently store pixels sideways and rely on EXIF for
     display; transposing here means the model scores the orientation a
     user or Immich actually sees.
+
+    ``preview_size`` asks the decoder for a reduced-resolution image
+    roughly this size (JPEG drafts via DCT scaling; a no-op for other
+    formats). The stats pass uses it because mean/std only need eval-size
+    pixels; training and inference always pass full resolution.
     """
     img = Image.open(path)
+    if preview_size is not None:
+        img.draft("RGB", preview_size)
     img = ImageOps.exif_transpose(img)
     return img.convert("RGB")

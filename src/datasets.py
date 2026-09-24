@@ -14,6 +14,7 @@ Filesystem scanning lives in utils.index; transform recipes live in builders.py.
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Sequence
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, Literal
 
 import torch
 from PIL import UnidentifiedImageError
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 from torchvision.transforms import functional as TF
 
 if TYPE_CHECKING:
@@ -64,15 +65,21 @@ class ImageLoader(Dataset):
     keep the index in a compact representation.
     """
 
-    def __init__(self, files: Sequence[Path], transform: Callable | None = None) -> None:
+    def __init__(
+        self,
+        files: Sequence[Path],
+        transform: Callable | None = None,
+        preview_size: tuple[int, int] | None = None,
+    ) -> None:
         self.files = files
         self.transform = transform
+        self.preview_size = preview_size
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int) -> Image.Image | torch.Tensor:
-        img = open_rgb(self.files[idx])
+        img = open_rgb(self.files[idx], preview_size=self.preview_size)
         if self.transform is not None:
             return self.transform(img)
         return img
@@ -151,6 +158,26 @@ class RotationGroupDataset(Dataset):
         return torch.stack(views, dim=0)
 
 
+def sample_stats_dataset(files: Sequence[Path], sample_count: int) -> Dataset:
+    """Build the loader used to estimate per-channel mean/std.
+
+    Stats don't need every file or full resolution: the eval transform
+    resizes to eval size anyway, so JPEGs are drafted at that size, and a
+    seeded slice is enough for a stable estimate. Training/inference use
+    their own ImageLoader at full resolution.
+    """
+    base = ImageLoader(
+        files=files,
+        transform=eval_preprocess,
+        preview_size=(constants.RESIZE_SIZE, constants.RESIZE_SIZE),
+    )
+    if sample_count >= len(files):
+        return base
+    rng = random.Random(constants.STATS_SAMPLE_SEED)
+    indices = rng.sample(range(len(files)), sample_count)
+    return Subset(base, indices)
+
+
 def build_dataset(
     split: Literal["train", "val"],
     datasets: Sequence[DatasetSpec],
@@ -182,10 +209,21 @@ def build_dataset(
             sorted(str(root) for root in roots),
             constants.INPUT_SIZE,
             constants.RESIZE_SIZE,
+            constants.STATS_SAMPLE_FRACTION,
+            constants.STATS_SAMPLE_SEED,
         )
-        logging.info("computing dataset stats for %s split (%d files)", split, len(files))
+        sample_count = min(
+            len(files),
+            max(1, int(len(files) * constants.STATS_SAMPLE_FRACTION)),
+        )
+        logging.info(
+            "computing dataset stats for %s split on %d/%d files",
+            split,
+            sample_count,
+            len(files),
+        )
         stats = compute_stats(
-            ImageLoader(files=files, transform=eval_preprocess),
+            sample_stats_dataset(files, sample_count),
             device=device,
             num_workers=num_workers,
             batch_size=batch_size,

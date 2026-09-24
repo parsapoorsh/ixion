@@ -37,8 +37,5 @@ DATASETS = [
     ),
 ]
 
-# stats.get_stats samples this fraction of each dataset's train split.
-# Changing this requires --invalidate-cache to take effect; cached stats
-# don't track which fraction produced them.
-STATS_SAMPLE_FRACTION = 0.20
-STATS_SAMPLE_SEED = 0
+# Stats sampling constants live in constants.py (datasets.py needs them and
+# can't import config without a cycle). See constants.STATS_SAMPLE_FRACTION.
