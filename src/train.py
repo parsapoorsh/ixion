@@ -395,7 +395,7 @@ def main(args) -> None:
         ds,
         batch_size=groups_per_batch,
         num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=device.type == "cuda",
         shuffle=True,
     )

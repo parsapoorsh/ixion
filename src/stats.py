@@ -55,7 +55,7 @@ def compute_stats(
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
         pin_memory=device.type == "cuda",
         persistent_workers=num_workers > 0,
     )
