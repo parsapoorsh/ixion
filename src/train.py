@@ -112,6 +112,7 @@ def cosine_with_warmup(
     if step < warmup:
         return step / max(1, warmup)
     t = (step - warmup) / max(1, total_steps - warmup)
+    t = min(1.0, t)
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
@@ -124,7 +125,15 @@ def setup_model(
     use_sam: bool = False,
     sam_rho: float = 0.05,
     resume_from: Path | None = None,
-) -> tuple[nn.Module, ModelEMA, torch.optim.Optimizer, nn.Module, int]:
+) -> tuple[
+    nn.Module,
+    ModelEMA,
+    torch.optim.Optimizer,
+    nn.Module,
+    int,
+    int | None,
+    int | None,
+]:
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
@@ -154,6 +163,8 @@ def setup_model(
     loss_fn = nn.CrossEntropyLoss()
 
     start_epoch = 0
+    schedule_total_steps = None
+    schedule_warmup_steps = None
     if resume_from is not None:
         payload = torch.load(resume_from, map_location=device, weights_only=False)
         model.load_state_dict(payload["model"])
@@ -178,16 +189,30 @@ def setup_model(
             )
 
         start_epoch = int(payload["epoch"]) + 1
+        if "schedule_total_steps" in payload:
+            schedule_total_steps = int(payload["schedule_total_steps"])
+        if "schedule_warmup_steps" in payload:
+            schedule_warmup_steps = int(payload["schedule_warmup_steps"])
         logger.info(
             "resumed from %s (next epoch=%d, ema_step=%d)",
-            resume_from, start_epoch, ema.step,
+            resume_from,
+            start_epoch,
+            ema.step,
         )
 
     # Compile after any state_dict load so checkpoints are saved/loaded in
     # uncompiled form (no "_orig_mod." prefix in the on-disk dict).
     model = torch.compile(model)
 
-    return model, ema, optimizer, loss_fn, start_epoch
+    return (
+        model,
+        ema,
+        optimizer,
+        loss_fn,
+        start_epoch,
+        schedule_total_steps,
+        schedule_warmup_steps,
+    )
 
 
 def train(
@@ -206,7 +231,15 @@ def train(
     sam_rho: float = 0.05,
     resume_from: Path | None = None,
 ) -> None:
-    model, ema, optimizer, loss_fn, start_epoch = setup_model(
+    (
+        model,
+        ema,
+        optimizer,
+        loss_fn,
+        start_epoch,
+        saved_schedule_total_steps,
+        saved_schedule_warmup_steps,
+    ) = setup_model(
         device=device,
         seed=seed,
         lr=lr,
@@ -218,11 +251,24 @@ def train(
     )
 
     steps_per_epoch = len(train_loader)
-    total_steps = steps_per_epoch * epochs
-    warmup_steps = steps_per_epoch * warmup_epochs
+    requested_total_steps = steps_per_epoch * epochs
+    total_steps = (
+        saved_schedule_total_steps
+        if saved_schedule_total_steps is not None
+        else requested_total_steps
+    )
+    requested_warmup_steps = steps_per_epoch * warmup_epochs
+    warmup_steps = (
+        saved_schedule_warmup_steps
+        if saved_schedule_warmup_steps is not None
+        else requested_warmup_steps
+    )
     logger.info(
-        "%d epochs x %d steps = %d total (warmup %d steps)",
-        epochs, steps_per_epoch, total_steps, warmup_steps,
+        "%d epochs x %d steps, schedule total %d (warmup %d steps)",
+        epochs,
+        steps_per_epoch,
+        total_steps,
+        warmup_steps,
     )
 
     global_step = start_epoch * steps_per_epoch
@@ -363,6 +409,8 @@ def train(
             optimizer,
             extras={
                 "epoch": epoch,
+                "schedule_total_steps": total_steps,
+                "schedule_warmup_steps": warmup_steps,
                 "stats": {"mean": list(stats.mean), "std": list(stats.std)},
             },
         )
@@ -477,7 +525,8 @@ if __name__ == "__main__":
         "--resume",
         type=Path,
         default=None,
-        help="path to an epoch_NNN.pt checkpoint to resume from (model, ema, ema_step restored; optimizer re-warms)",
+        help="path to an epoch_NNN.pt checkpoint to resume from "
+             "(model, EMA, optimizer, and saved schedule restored)",
     )
     args = p.parse_args()
 
