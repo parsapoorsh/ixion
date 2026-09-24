@@ -9,11 +9,20 @@ def build_train_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
     erasing_p: float = 0.25,
+    crop_policy: str = "random",
 ) -> T.Compose:
     """Label-safe augmentation only. No spatial flip/rotate (would corrupt labels)."""
+    if crop_policy == "none":
+        spatial = [T.Resize(constants.INPUT_SIZE)]
+    elif crop_policy == "random":
+        spatial = [T.Resize(constants.RESIZE_SIZE), T.RandomCrop(constants.INPUT_SIZE)]
+    elif crop_policy == "center":
+        spatial = [T.Resize(constants.RESIZE_SIZE), T.CenterCrop(constants.INPUT_SIZE)]
+    else:
+        raise ValueError(f"unknown crop policy: {crop_policy}")
+
     transforms = [
-        T.Resize(constants.RESIZE_SIZE),
-        T.RandomCrop(constants.INPUT_SIZE),
+        *spatial,
         T.ColorJitter(
             brightness=0.4,
             contrast=0.4,

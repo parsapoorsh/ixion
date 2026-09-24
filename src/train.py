@@ -450,6 +450,7 @@ def main(args) -> None:
         prefetch_factor=args.prefetch_factor,
         invalidate_cache=args.invalidate_cache,
         erasing_p=args.erasing_p,
+        crop_policy=args.crop_policy,
     )
 
     dl = DataLoader(
@@ -542,6 +543,12 @@ if __name__ == "__main__":
         type=float,
         default=0.25,
         help="random erasing probability (0 disables)",
+    )
+    p.add_argument(
+        "--crop-policy",
+        choices=["random", "center", "none"],
+        default="random",
+        help="train spatial preprocessing: resize+random crop, resize+center crop, or direct resize",
     )
     p.add_argument(
         "--sam",
