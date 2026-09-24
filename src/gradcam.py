@@ -1,7 +1,7 @@
 """GradCAM visualiser for the upright detector.
 
-Shows the image at all 4 rotations; for each, displays the model's
-P(upright) and a GradCAM heatmap of the upright logit.
+Shows the image at all 4 rotations; for each, displays its four-view
+softmax share and a GradCAM heatmap of the upright logit.
 Target layer: backbone.conv_head (last 1x1 conv before attention pool,
 320->1280 channels, spatial resolution ~7x7 for 224x224 input).
 
@@ -55,7 +55,7 @@ def compute_gradcam_batch(
     tensor: torch.Tensor,
 ) -> tuple[list[np.ndarray], list[float]]:
     """Run one forward+backward for a batched tensor and return per-sample
-    GradCAM heatmaps (each in [0, 1]) plus per-sample P(upright)."""
+    GradCAM heatmaps (each in [0, 1]) plus per-sample upright logits."""
     target_layer: nn.Module = model.backbone.conv_head  # type: ignore[assignment]
 
     saved_features: list[torch.Tensor] = []
@@ -84,8 +84,8 @@ def compute_gradcam_batch(
     cam_max = cam.amax(dim=(1, 2), keepdim=True).clamp(min=1e-8)
     cam = (cam / cam_max).cpu().detach().float().numpy()
 
-    probs = output.detach().sigmoid().cpu().float().reshape(-1).tolist()
-    return [cam[i] for i in range(cam.shape[0])], probs
+    logits = output.detach().cpu().float().reshape(-1).tolist()
+    return [cam[i] for i in range(cam.shape[0])], logits
 
 
 def make_overlay(
@@ -198,12 +198,19 @@ def visualise_grid(
         ax = axes[idx // 2, idx % 2]
         marker = " *" if idx == pred else ""
         ax.imshow(img_overlay)
-        ax.set_title(f"{angle}°{marker}  P(upright)={prob:.1%}", fontsize=11)
+        ax.set_title(f"{angle}°{marker}  softmax={prob:.0%}", fontsize=11)
         ax.axis("off")
 
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
+
+
+def _softmax(values: list[float]) -> list[float]:
+    arr = np.asarray(values, dtype=np.float64)
+    arr -= arr.max()
+    exp = np.exp(arr)
+    return (exp / exp.sum()).tolist()
 
 
 def compute_rotations(
@@ -222,7 +229,8 @@ def compute_rotations(
         [preprocess(d) for d in displays]  # type: ignore[arg-type]
     ).to(device)
 
-    cams, probs = compute_gradcam_batch(model, tensors)
+    cams, logits = compute_gradcam_batch(model, tensors)
+    probs = _softmax(logits)
     return displays, probs, cams, tensors
 
 
