@@ -206,7 +206,7 @@ def visualise_grid(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
 
 
-def _softmax(values: list[float]) -> list[float]:
+def softmax(values: list[float]) -> list[float]:
     arr = np.asarray(values, dtype=np.float64)
     arr -= arr.max()
     exp = np.exp(arr)
@@ -230,7 +230,7 @@ def compute_rotations(
     ).to(device)
 
     cams, logits = compute_gradcam_batch(model, tensors)
-    probs = _softmax(logits)
+    probs = softmax(logits)
     return displays, probs, cams, tensors
 
 

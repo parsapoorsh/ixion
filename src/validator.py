@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 N_ROTS = len(constants.ROTATIONS)
 
 
-def _log_coverage_curve(margins: list[float], corrects: list[bool]) -> None:
+def log_coverage_curve(margins: list[float], corrects: list[bool]) -> None:
     """Log accuracy and coverage at fixed abstention thresholds."""
     margin_t = torch.tensor(margins, dtype=torch.float64)
     ok_t = torch.tensor(corrects, dtype=torch.bool)
@@ -134,7 +134,7 @@ def run_validation(
         )
 
     if margins:
-        _log_coverage_curve(margins, corrects)
+        log_coverage_curve(margins, corrects)
 
     loss = total_loss / max(1, group4_total)
     group4_acc = group4_correct / max(1, group4_total)

@@ -53,7 +53,7 @@ class RotationVote:
         return self.margin < threshold
 
 
-def _vote_from_probs(probs: np.ndarray) -> RotationVote:
+def vote_from_probs(probs: np.ndarray) -> RotationVote:
     norm = probs
 
     order = np.argsort(probs)
@@ -133,4 +133,4 @@ def predict_rotations(
         logits = model(batch)
     probs = logits.float().softmax(dim=0).reshape(-1).cpu().numpy()
 
-    return _vote_from_probs(probs)
+    return vote_from_probs(probs)

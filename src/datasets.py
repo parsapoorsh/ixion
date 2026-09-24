@@ -78,7 +78,7 @@ class ImageLoader(Dataset):
         return img
 
 
-def _load_base_image(base: ImageLoader, img_idx: int) -> Image.Image:
+def load_base_image(base: ImageLoader, img_idx: int) -> Image.Image:
     """Load ``base[img_idx]``, failing loudly on unreadable files.
 
     Substituting a neighbouring image (the old wrap-around behaviour)
@@ -110,7 +110,7 @@ class RotationPairDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, float]:
         img_idx, rot_idx = divmod(idx, len(constants.ROTATIONS))
-        img = _load_base_image(self.base, img_idx)
+        img = load_base_image(self.base, img_idx)
         tensor = self.transform(img)
         if rot_idx != 0:
             tensor = TF.rotate(
@@ -140,7 +140,7 @@ class RotationGroupDataset(Dataset):
         return len(self.base)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        img = _load_base_image(self.base, idx)
+        img = load_base_image(self.base, idx)
         tensor = self.transform(img)
         views: list[torch.Tensor] = []
         for rot_idx, deg in enumerate(constants.ROTATIONS):
