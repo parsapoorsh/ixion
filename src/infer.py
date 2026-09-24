@@ -77,13 +77,18 @@ def _vote_from_probs(probs: np.ndarray) -> RotationVote:
 
 
 @torch.no_grad()
-def predict_image(
+def predict_upright_score(
     model: nn.Module,
     img: Image.Image,
     device: torch.device,
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
 ) -> float:
+    """Return the raw sigmoid upright score for a single view.
+
+    This score is not calibrated by the four-view group cross-entropy
+    objective; prefer ``predict_rotations`` for product decisions.
+    """
     transform = build_eval_transform(
         mean=mean,
         std=std,
