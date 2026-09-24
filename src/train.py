@@ -122,6 +122,8 @@ def setup_model(
     lr: float,
     weight_decay: float,
     ema_decay: float,
+    drop_rate: float = 0.2,
+    drop_path_rate: float = 0.1,
     use_sam: bool = False,
     sam_rho: float = 0.05,
     resume_from: Path | None = None,
@@ -137,7 +139,11 @@ def setup_model(
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
-    model = RotationModel(pretrained=False).to(device)
+    model = RotationModel(
+        pretrained=False,
+        drop_rate=drop_rate,
+        drop_path_rate=drop_path_rate,
+    ).to(device)
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
     ema = ModelEMA(model, decay=ema_decay)
 
@@ -224,6 +230,8 @@ def train(
     epochs: int,
     lr: float = 3e-4,
     weight_decay: float = 0.1,
+    drop_rate: float = 0.2,
+    drop_path_rate: float = 0.1,
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
@@ -245,6 +253,8 @@ def train(
         lr=lr,
         weight_decay=weight_decay,
         ema_decay=ema_decay,
+        drop_rate=drop_rate,
+        drop_path_rate=drop_path_rate,
         use_sam=use_sam,
         sam_rho=sam_rho,
         resume_from=resume_from,
@@ -439,6 +449,7 @@ def main(args) -> None:
         batch_size=args.batch_size,
         prefetch_factor=args.prefetch_factor,
         invalidate_cache=args.invalidate_cache,
+        erasing_p=args.erasing_p,
     )
 
     dl = DataLoader(
@@ -457,6 +468,9 @@ def main(args) -> None:
         checkpoint_dir=constants.CHECKPOINT_DIR,
         stats=stats,
         epochs=args.epochs,
+        weight_decay=args.weight_decay,
+        drop_rate=args.dropout,
+        drop_path_rate=args.drop_path,
         use_sam=args.sam,
         sam_rho=args.sam_rho,
         resume_from=args.resume,
@@ -504,6 +518,30 @@ if __name__ == "__main__":
         type=int,
         default=30,
         help="total number of training epochs",
+    )
+    p.add_argument(
+        "--weight-decay",
+        type=float,
+        default=0.1,
+        help="AdamW weight decay",
+    )
+    p.add_argument(
+        "--dropout",
+        type=float,
+        default=0.2,
+        help="head dropout rate",
+    )
+    p.add_argument(
+        "--drop-path",
+        type=float,
+        default=0.1,
+        help="backbone stochastic depth rate",
+    )
+    p.add_argument(
+        "--erasing-p",
+        type=float,
+        default=0.25,
+        help="random erasing probability (0 disables)",
     )
     p.add_argument(
         "--sam",

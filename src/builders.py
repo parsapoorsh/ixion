@@ -8,9 +8,10 @@ import constants
 def build_train_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
+    erasing_p: float = 0.25,
 ) -> T.Compose:
     """Label-safe augmentation only. No spatial flip/rotate (would corrupt labels)."""
-    return T.Compose([
+    transforms = [
         T.Resize(constants.RESIZE_SIZE),
         T.RandomCrop(constants.INPUT_SIZE),
         T.ColorJitter(
@@ -22,14 +23,18 @@ def build_train_transform(
         T.RandomGrayscale(p=0.1),
         T.ToTensor(),
         T.Normalize(mean, std),
+    ]
+    if erasing_p > 0:
         # After normalize so erased patches are mean-gray in model space.
-        T.RandomErasing(
-            p=0.25,
-            scale=(0.02, 0.15),
-            ratio=(0.3, 3.3),
-            value=0,
-        ),
-    ])
+        transforms.append(
+            T.RandomErasing(
+                p=erasing_p,
+                scale=(0.02, 0.15),
+                ratio=(0.3, 3.3),
+                value=0,
+            )
+        )
+    return T.Compose(transforms)
 
 
 eval_preprocess = T.Compose([

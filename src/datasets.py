@@ -161,6 +161,7 @@ def build_dataset(
     prefetch_factor: int,
     stats: NormStats | None = None,
     invalidate_cache: bool = False,
+    erasing_p: float = 0.25,
 ) -> tuple[RotationGroupDataset | RotationPairDataset, NormStats]:
     roots = [
         root
@@ -196,7 +197,7 @@ def build_dataset(
         logging.info("stats - mean: %s | std: %s", stats.mean, stats.std)
 
     transform = (
-        build_train_transform(mean=stats.mean, std=stats.std)
+        build_train_transform(mean=stats.mean, std=stats.std, erasing_p=erasing_p)
         if split == "train"
         else build_eval_transform(mean=stats.mean, std=stats.std)
     )
