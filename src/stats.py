@@ -18,6 +18,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
+from utils.index import cache_fingerprint
+
 if TYPE_CHECKING:
     pass
 
@@ -28,15 +30,24 @@ class NormStats:
     std: tuple[float, float, float]
 
 
-def load_stats_cache(path: Path) -> NormStats:
+def load_stats_cache(path: Path, fingerprint: str | None = None) -> NormStats | None:
     if not path.exists():
         raise FileNotFoundError(f"stats cache not found: {path}")
     data = json.loads(path.read_text())
+    if fingerprint is not None and data.get("fingerprint") != fingerprint:
+        return None
     return NormStats(mean=tuple(data["mean"]), std=tuple(data["std"]))  # type: ignore[arg-type]
 
 
-def save_stats_cache(path: Path, stats: NormStats) -> None:
-    path.write_text(json.dumps({"mean": list(stats.mean), "std": list(stats.std)}))
+def save_stats_cache(
+    path: Path,
+    stats: NormStats,
+    fingerprint: str | None = None,
+) -> None:
+    payload = {"mean": list(stats.mean), "std": list(stats.std)}
+    if fingerprint is not None:
+        payload["fingerprint"] = fingerprint
+    path.write_text(json.dumps(payload))
 
 
 def compute_stats(
@@ -47,9 +58,13 @@ def compute_stats(
     prefetch_factor: int,
     cache_path: Path | None = None,
     invalidate_cache: bool = False,
+    fingerprint: str | None = None,
 ) -> NormStats:
     if cache_path is not None and cache_path.exists() and not invalidate_cache:
-        return load_stats_cache(cache_path)
+        cached = load_stats_cache(cache_path, fingerprint)
+        if cached is not None:
+            return cached
+        logging.info("stats cache %s does not match configuration; recomputing", cache_path)
 
     stats_loader = DataLoader(
         dataset,
@@ -89,5 +104,5 @@ def compute_stats(
         std=tuple(std.tolist()),  # type: ignore[arg-type]
     )
     if cache_path is not None:
-        save_stats_cache(cache_path, stats)
+        save_stats_cache(cache_path, stats, fingerprint)
     return stats

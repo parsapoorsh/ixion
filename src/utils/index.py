@@ -17,6 +17,7 @@ is not needed and the trie can stay collapsed in memory.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import logging
 import lzma
@@ -29,6 +30,12 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
+
+
+def cache_fingerprint(*parts: object) -> str:
+    """Short stable hash identifying what produced a cache entry."""
+    data = json.dumps(list(parts), sort_keys=True, default=str)
+    return hashlib.sha256(data.encode()).hexdigest()[:12]
 
 
 def index_files(
@@ -52,10 +59,16 @@ def index_files(
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / f"index_{name}.json.xz"
+    fingerprint = cache_fingerprint(name, sorted(str(root) for root in roots))
     if cache.exists():
         with lzma.open(cache, "rt") as f:
-            trie = json.load(f)
-        return PathList(trie)
+            payload = json.load(f)
+        if payload.get("fingerprint") == fingerprint:
+            return PathList(payload["trie"])
+        logger.info(
+            "cached index %s does not match current roots; rescanning",
+            cache.name,
+        )
 
     t0 = time.monotonic()
     trie: dict = {}
@@ -75,7 +88,7 @@ def index_files(
     logger.info("scanned %s: %d files in %.1fs", name, count, dt)
 
     with lzma.open(cache, "wt") as f:
-        json.dump(trie, f)
+        json.dump({"fingerprint": fingerprint, "trie": trie}, f)
     return PathList(trie)
 
 

@@ -33,7 +33,7 @@ import constants
 from builders import build_eval_transform, build_train_transform, eval_preprocess
 from stats import NormStats, compute_stats
 from utils.image_io import open_rgb
-from utils.index import index_files
+from utils.index import cache_fingerprint, index_files
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +176,12 @@ def build_dataset(
 
     if stats is None:
         stats_cache = constants.INDEX_CACHE_DIR / f"stats_{split}.json"
+        stats_fingerprint = cache_fingerprint(
+            "stats",
+            sorted(str(root) for root in roots),
+            constants.INPUT_SIZE,
+            constants.RESIZE_SIZE,
+        )
         logging.info("computing dataset stats for %s split (%d files)", split, len(files))
         stats = compute_stats(
             ImageLoader(files=files, transform=eval_preprocess),
@@ -185,6 +191,7 @@ def build_dataset(
             prefetch_factor=prefetch_factor,
             cache_path=stats_cache,
             invalidate_cache=invalidate_cache,
+            fingerprint=stats_fingerprint,
         )
         logging.info("stats - mean: %s | std: %s", stats.mean, stats.std)
 
