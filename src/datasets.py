@@ -79,19 +79,18 @@ class ImageLoader(Dataset):
 
 
 def _load_base_image(base: ImageLoader, img_idx: int) -> Image.Image:
-    """Load ``base[img_idx]``, skipping unreadable files by wrapping around."""
-    n = len(base)
-    for offset in range(n):
-        probe = (img_idx + offset) % n
-        try:
-            return base[probe]  # type: ignore[return-value]
-        except (UnidentifiedImageError, OSError) as exc:
-            logger.warning(
-                "skipping unreadable image %s: %s",
-                base.files[probe],
-                exc,
-            )
-    raise RuntimeError("no readable images remain in the dataset")
+    """Load ``base[img_idx]``, failing loudly on unreadable files.
+
+    Substituting a neighbouring image (the old wrap-around behaviour)
+    silently duplicated samples and skewed validation metrics, so corrupt
+    files now surface as errors instead.
+    """
+    try:
+        return base[img_idx]  # type: ignore[return-value]
+    except (UnidentifiedImageError, OSError) as exc:
+        raise RuntimeError(
+            f"unreadable image {base.files[img_idx]}: {exc}"
+        ) from exc
 
 
 class RotationPairDataset(Dataset):
