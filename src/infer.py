@@ -32,8 +32,8 @@ class RotationVote:
 
     `normalized_probs` is L1-normalised `probs` so the four values sum to 1.
 
-    `best_deg` is argmax of raw `probs` — the rotation that should be
-    applied (clockwise, matching training) to bring the image upright.
+    `best_deg` is argmax of raw `probs` — the counter-clockwise rotation
+    that should be applied, matching ``TF.rotate``, to bring the image upright.
 
     `margin` is top1 − top2 raw probability; small values mean ambiguous.
 

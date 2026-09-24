@@ -136,7 +136,7 @@ def prefetch_worker(
             if abstained:
                 corrected = original
             else:
-                corrected = original.rotate(-best_deg, expand=True)
+                corrected = original.rotate(best_deg, expand=True)
             result: InferResult = InferResult(
                 path=path,
                 original=original,
