@@ -188,7 +188,10 @@ def validate_checkpoint(
         stats = load_stats_cache(cache_file)
         logger.info("loaded stats from cache file %s", cache_file)
 
-    model = RotationModel(pretrained=False).to(device)
+    model = RotationModel(
+        pretrained=False,
+        pooling=payload.get("pooling", "attention"),
+    ).to(device)
     model.load_state_dict(payload[state_key])
 
     val_ds, _ = build_dataset(

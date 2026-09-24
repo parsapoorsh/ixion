@@ -2,8 +2,8 @@
 
 A single output neuron predicts whether the image is upright (0°). Trained
 from scratch (no ImageNet weights). The backbone returns a spatial feature
-map; spatial attention pooling aggregates it before LayerNorm → Dropout →
-Linear.
+map; either spatial attention or global average pooling aggregates it
+before LayerNorm → Dropout → Linear.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ class RotationModel(nn.Module):
         pretrained: bool = False,
         drop_rate: float = 0.2,
         drop_path_rate: float = 0.1,
+        pooling: str = "attention",
     ) -> None:
         super().__init__()
         self.backbone = timm.create_model(
@@ -47,7 +48,13 @@ class RotationModel(nn.Module):
             drop_path_rate=drop_path_rate,
         )
         feat_dim: int = self.backbone.num_features  # 1280 # pyright: ignore[reportAssignmentType]
-        self.pool = SpatialAttentionPool(feat_dim)
+        if pooling == "attention":
+            self.pool: nn.Module = SpatialAttentionPool(feat_dim)
+        elif pooling == "avg":
+            self.pool = nn.AdaptiveAvgPool2d(1)
+        else:
+            raise ValueError(f"unknown pooling: {pooling}")
+        self.pooling = pooling
         self.head = nn.Sequential(
             nn.LayerNorm(feat_dim),
             nn.Dropout(drop_rate),
@@ -56,5 +63,8 @@ class RotationModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feats = self.backbone(x)
-        pooled = self.pool(feats)
+        if self.pooling == "avg":
+            pooled = self.pool(feats).flatten(1)
+        else:
+            pooled = self.pool(feats)
         return self.head(pooled).squeeze(-1)

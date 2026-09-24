@@ -84,7 +84,10 @@ def load_model(
     else:
         stats = load_stats_cache(INDEX_CACHE_DIR / "stats_train.json")
 
-    model = RotationModel(pretrained=False).to(device)
+    model = RotationModel(
+        pretrained=False,
+        pooling=payload.get("pooling", "attention"),
+    ).to(device)
     model.load_state_dict(payload[state_key])
     model.eval()
     return model, stats

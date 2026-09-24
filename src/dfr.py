@@ -70,7 +70,10 @@ def load_checkpoint_model(
         std=tuple(raw_stats["std"]),  # type: ignore[arg-type]
     )
 
-    model = RotationModel(pretrained=False).to(device)
+    model = RotationModel(
+        pretrained=False,
+        pooling=payload.get("pooling", "attention"),
+    ).to(device)
     model.load_state_dict(payload[state_key])
     logger.info(
         "loaded %s (epoch=%s, weights=%s)",

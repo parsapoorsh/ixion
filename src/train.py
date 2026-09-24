@@ -124,6 +124,7 @@ def setup_model(
     ema_decay: float,
     drop_rate: float = 0.2,
     drop_path_rate: float = 0.1,
+    pooling: str = "attention",
     use_sam: bool = False,
     sam_rho: float = 0.05,
     resume_from: Path | None = None,
@@ -139,10 +140,19 @@ def setup_model(
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
+    # Peek at the checkpoint before building the model so resumes honour the
+    # pooling variant it was trained with (attention vs global average).
+    resume_payload = None
+    resume_pooling = pooling
+    if resume_from is not None:
+        resume_payload = torch.load(resume_from, map_location=device, weights_only=False)
+        resume_pooling = str(resume_payload.get("pooling", pooling))
+
     model = RotationModel(
         pretrained=False,
         drop_rate=drop_rate,
         drop_path_rate=drop_path_rate,
+        pooling=resume_pooling,
     ).to(device)
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
     ema = ModelEMA(model, decay=ema_decay)
@@ -172,7 +182,7 @@ def setup_model(
     schedule_total_steps = None
     schedule_warmup_steps = None
     if resume_from is not None:
-        payload = torch.load(resume_from, map_location=device, weights_only=False)
+        payload = resume_payload
         model.load_state_dict(payload["model"])
 
         ema.module.load_state_dict(payload["ema"])
@@ -232,6 +242,7 @@ def train(
     weight_decay: float = 0.1,
     drop_rate: float = 0.2,
     drop_path_rate: float = 0.1,
+    pooling: str = "attention",
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
@@ -255,6 +266,7 @@ def train(
         ema_decay=ema_decay,
         drop_rate=drop_rate,
         drop_path_rate=drop_path_rate,
+        pooling=pooling,
         use_sam=use_sam,
         sam_rho=sam_rho,
         resume_from=resume_from,
@@ -421,6 +433,7 @@ def train(
                 "epoch": epoch,
                 "schedule_total_steps": total_steps,
                 "schedule_warmup_steps": warmup_steps,
+                "pooling": pooling,
                 "stats": {"mean": list(stats.mean), "std": list(stats.std)},
             },
         )
@@ -472,6 +485,7 @@ def main(args) -> None:
         weight_decay=args.weight_decay,
         drop_rate=args.dropout,
         drop_path_rate=args.drop_path,
+        pooling=args.pooling,
         use_sam=args.sam,
         sam_rho=args.sam_rho,
         resume_from=args.resume,
@@ -549,6 +563,12 @@ if __name__ == "__main__":
         choices=["random", "center", "none"],
         default="random",
         help="train spatial preprocessing: resize+random crop, resize+center crop, or direct resize",
+    )
+    p.add_argument(
+        "--pooling",
+        choices=["attention", "avg"],
+        default="attention",
+        help="how to aggregate backbone features before the head",
     )
     p.add_argument(
         "--sam",
