@@ -18,7 +18,9 @@ import argparse
 import dataclasses
 import logging
 import math
+import shutil
 import sys
+import sysconfig
 import time
 from pathlib import Path
 
@@ -116,6 +118,30 @@ def cosine_with_warmup(
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
+def python_headers_available() -> bool:
+    for key in ("include", "platinclude"):
+        include_dir = sysconfig.get_path(key)
+        if include_dir is not None and (Path(include_dir) / "Python.h").exists():
+            return True
+    return False
+
+
+def python_headers_package_hint() -> str:
+    version = sysconfig.get_python_version()
+    return f"sudo apt install python{version}-dev"
+
+
+def can_compile_model(device: torch.device) -> tuple[bool, str | None]:
+    if shutil.which("gcc") is None:
+        return False, "gcc is not available; install it with sudo apt install build-essential"
+    if not python_headers_available():
+        return False, (
+            f"Python.h is not available under {sysconfig.get_path('include')}; "
+            f"install Python headers with {python_headers_package_hint()}"
+        )
+    return True, None
+
+
 def setup_model(
     device: torch.device,
     seed: int,
@@ -127,6 +153,7 @@ def setup_model(
     pooling: str = "attention",
     use_sam: bool = False,
     sam_rho: float = 0.05,
+    compile_model: bool = True,
     resume_from: Path | None = None,
 ) -> tuple[
     nn.Module,
@@ -218,7 +245,15 @@ def setup_model(
 
     # Compile after any state_dict load so checkpoints are saved/loaded in
     # uncompiled form (no "_orig_mod." prefix in the on-disk dict).
-    model = torch.compile(model)
+    if compile_model:
+        can_compile, reason = can_compile_model(device)
+        if can_compile:
+            model = torch.compile(model)
+            logger.info("enabled torch.compile")
+        else:
+            logger.warning("disabled torch.compile: %s", reason)
+    else:
+        logger.info("disabled torch.compile by request")
 
     return (
         model,
@@ -248,6 +283,7 @@ def train(
     ema_decay: float = 0.9999,
     use_sam: bool = False,
     sam_rho: float = 0.05,
+    compile_model: bool = True,
     resume_from: Path | None = None,
 ) -> None:
     (
@@ -269,6 +305,7 @@ def train(
         pooling=pooling,
         use_sam=use_sam,
         sam_rho=sam_rho,
+        compile_model=compile_model,
         resume_from=resume_from,
     )
 
@@ -488,6 +525,7 @@ def main(args) -> None:
         pooling=args.pooling,
         use_sam=args.sam,
         sam_rho=args.sam_rho,
+        compile_model=not args.no_compile,
         resume_from=args.resume,
     )
 
@@ -585,6 +623,11 @@ if __name__ == "__main__":
         "--invalidate-cache",
         action="store_true",
         help="delete cached file-index and per-dataset stats JSONs before running",
+    )
+    p.add_argument(
+        "--no-compile",
+        action="store_true",
+        help="disable torch.compile even when build dependencies are available",
     )
     p.add_argument(
         "--resume",
