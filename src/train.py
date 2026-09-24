@@ -349,8 +349,10 @@ def train(
 
         dt = time.monotonic() - epoch_start
         logger.info(
-            "epoch %d done in %.0fs, throughput %.1f img/s",
-            epoch, dt, epoch_stats.seen / dt,
+            "epoch %d done in %.0fs, throughput %.1f views/s",
+            epoch,
+            dt,
+            epoch_stats.seen * n_rots / dt,
         )
 
         ckpt = checkpoint_dir / f"epoch_{epoch:03d}.pt"
