@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Literal
 
 import torch
 from PIL import UnidentifiedImageError
-from torch.utils.data import Dataset, Subset
+from torch.utils.data import Dataset
 from torchvision.transforms import functional as TF
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
 import constants
-from builders import build_eval_transform, build_train_transform, eval_preprocess
+from builders import build_eval_transform, build_train_transform
 from stats import NormStats, compute_stats
 from utils.image_io import open_rgb
 from utils.index import cache_fingerprint, index_files
@@ -55,9 +55,8 @@ class DatasetSpec:
 class ImageLoader(Dataset):
     """Loads images by index from a path source, optionally applying a transform.
 
-    Without a transform, returns a ``PIL.Image`` (used by ``RotationPairDataset``
-    which applies its own transform after rotation). With a transform, returns the
-    transformed tensor (used by the stats DataLoader directly).
+    Without a transform, returns a ``PIL.Image`` (used by the rotation datasets).
+    With a transform, returns the transformed tensor.
 
     ``files`` only needs to support ``__len__`` and ``__getitem__(idx)`` -
     anything sequence-like works (a list, an ``index.PathList`` view over a
@@ -158,24 +157,12 @@ class RotationGroupDataset(Dataset):
         return torch.stack(views, dim=0)
 
 
-def sample_stats_dataset(files: Sequence[Path], sample_count: int) -> Dataset:
-    """Build the loader used to estimate per-channel mean/std.
-
-    Stats don't need every file or full resolution: the eval transform
-    resizes to eval size anyway, so JPEGs are drafted at that size, and a
-    seeded slice is enough for a stable estimate. Training/inference use
-    their own ImageLoader at full resolution.
-    """
-    base = ImageLoader(
-        files=files,
-        transform=eval_preprocess,
-        preview_size=(constants.RESIZE_SIZE, constants.RESIZE_SIZE),
-    )
+def sample_stats_indices(files: Sequence[Path], sample_count: int) -> list[int] | None:
+    """Return the seeded subset used to estimate per-channel mean/std."""
     if sample_count >= len(files):
-        return base
+        return None
     rng = random.Random(constants.STATS_SAMPLE_SEED)
-    indices = rng.sample(range(len(files)), sample_count)
-    return Subset(base, indices)
+    return sorted(rng.sample(range(len(files)), sample_count))
 
 
 def build_dataset(
@@ -223,11 +210,12 @@ def build_dataset(
             len(files),
         )
         stats = compute_stats(
-            sample_stats_dataset(files, sample_count),
+            files=files,
             device=device,
             num_workers=num_workers,
             batch_size=batch_size,
             prefetch_factor=prefetch_factor,
+            sample_indices=sample_stats_indices(files, sample_count),
             cache_path=stats_cache,
             invalidate_cache=invalidate_cache,
             fingerprint=stats_fingerprint,
