@@ -32,6 +32,9 @@ from stats import NormStats, load_stats_cache
 from utils.image_io import open_rgb
 
 
+PROJECT_ROOT = Path(__file__).parent.parent
+
+
 def load_model(
     checkpoint: Path,
     device: torch.device,
@@ -278,6 +281,7 @@ def main(args) -> None:
             f"{img_path.name} — predicted angle {angle:.1f}°",
             args.out_dir / f"{img_path.stem}_gradcam.png",
         )
+        print(f"{img_path.name} — predicted angle {angle:.1f}°")
 
         guided_cams = compute_guided_gradcam_batch(model, tensors, cams)
         visualise_grid(
@@ -292,10 +296,10 @@ def main(args) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--checkpoint", type=Path, required=True)
-    p.add_argument("--device", default="cuda:1")
+    p.add_argument("--device", default="cuda")
     p.add_argument("--images", type=Path, nargs="+", required=True)
-    p.add_argument("--out-dir", type=Path, default=Path("gradcam_out"))
+    p.add_argument("--out-dir", type=Path, required=True)
+    p.add_argument("--checkpoint", type=Path, required=True)
     args = p.parse_args()
 
     main(args)
