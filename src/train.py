@@ -353,7 +353,7 @@ def train(
 
         n_rots = len(constants.ROTATIONS)
         for groups in pbar:
-            # groups: (B, 4, C, H, W) — B base images, four shared-transform views
+            # groups: (B, 4, C, H, W) - B base images, four shared-transform views
             groups = groups.to(device, non_blocking=True)
             batch_groups, _, channels, height, width = groups.shape
             views = groups.reshape(

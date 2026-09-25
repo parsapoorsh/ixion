@@ -97,7 +97,7 @@ def make_overlay(
     alpha: float = 0.65,
     colormap: str = "jet",
 ) -> Image.Image:
-    cam = np.sqrt(cam)  # spread activation — avoids tiny concentrated hot spots
+    cam = np.sqrt(cam)  # spread activation - avoids tiny concentrated hot spots
     heatmap = mpl.colormaps[colormap](cam)[:, :, :3]
     heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(
         pil_img.size, Image.Resampling.BICUBIC
@@ -188,7 +188,7 @@ def visualise_grid(
     out_path: Path,
     colormap: str = "jet",
 ) -> None:
-    """Render a 2×2 rotation grid with `heatmaps[i]` overlaid on `displays[i]`."""
+    """Render a 2x2 rotation grid with `heatmaps[i]` overlaid on `displays[i]`."""
     pred = int(np.argmax(probs))
 
     fig = Figure(figsize=(10, 10))
@@ -278,17 +278,17 @@ def main(args) -> None:
             displays,
             probs,
             cams,
-            f"{img_path.name} — predicted angle {angle:.1f}°",
+            f"{img_path.name} - predicted angle {angle:.1f}°",
             args.out_dir / f"{img_path.stem}_gradcam.png",
         )
-        print(f"{img_path.name} — predicted angle {angle:.1f}°")
+        print(f"{img_path.name} - predicted angle {angle:.1f}°")
 
         guided_cams = compute_guided_gradcam_batch(model, tensors, cams)
         visualise_grid(
             displays,
             probs,
             guided_cams,
-            f"{img_path.name} — guided GradCAM — predicted angle {angle:.1f}°",
+            f"{img_path.name} - guided GradCAM - predicted angle {angle:.1f}°",
             args.out_dir / f"{img_path.stem}_guidedcam.png",
             colormap="inferno",
         )

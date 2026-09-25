@@ -2,7 +2,7 @@
 
 Scans a directory, runs predict_rotations on every image in a background
 prefetch thread (queue depth: PREFETCH_SIZE), and displays each result in
-a blocking tkinter window — close the window to advance to the next image.
+a blocking tkinter window - close the window to advance to the next image.
 A tqdm bar in the terminal tracks inference progress independently of display.
 
 Usage:
@@ -189,7 +189,7 @@ def show_result(result: InferResult, index: int, total: int) -> None:
         decision = f"correction: {result.best_deg}° (margin={result.vote.margin:.3f})"
     title = (
         f"[{index}/{total}]  {result.path.name}"
-        f"  →  {decision}"
+        f"  ->  {decision}"
         f"  |  {prob_str}"
     )
 
@@ -235,12 +235,12 @@ def show_result(result: InferResult, index: int, total: int) -> None:
 def main(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
 
-    print(f"Loading {args.checkpoint}  ({args.weights} weights)…")
+    print(f"Loading {args.checkpoint}  ({args.weights} weights)...")
     model, stats = load_model(args.checkpoint, device, args.weights)
     print("Model ready.\n")
 
     root_dir = Path(args.dir)
-    print(f"Scanning {root_dir}…")
+    print(f"Scanning {root_dir}...")
     paths = scan_images(root_dir)
     if not paths:
         print("No images found.")
@@ -282,7 +282,7 @@ def main(args: argparse.Namespace) -> None:
             skipped += 1
             tqdm.write(
                 f"[{processed}/{len(paths)}]  {item.path.name}"
-                f"  skipped (conf={best_norm:.3f} ≥ {args.conf_threshold})"
+                f"  skipped (conf={best_norm:.3f} >= {args.conf_threshold})"
             )
             continue
 
@@ -307,8 +307,8 @@ def main(args: argparse.Namespace) -> None:
     bar.close()
     worker.join()
     print(
-        f"\nDone — displayed {shown} / {len(paths)} image(s)"
-        f"  ({skipped} skipped conf ≥ {args.conf_threshold},"
+        f"\nDone - displayed {shown} / {len(paths)} image(s)"
+        f"  ({skipped} skipped conf >= {args.conf_threshold},"
         f" {abstained} abstained on margin)."
     )
 

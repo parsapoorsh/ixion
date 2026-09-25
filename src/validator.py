@@ -7,7 +7,7 @@ any checkpoint with any device.
 
 Reports group cross-entropy and product-oriented group4 accuracy (argmax
 over the four synthetic rotations of each base image) from the same
-forward pass — no extra model work.
+forward pass - no extra model work.
 """
 
 from __future__ import annotations

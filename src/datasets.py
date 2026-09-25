@@ -133,7 +133,7 @@ class RotationGroupDataset(Dataset):
     """One item = all four rotations of a single base image.
 
     Transform runs once (shared crop / jitter / erase), then each view is
-    produced with ``TF.rotate`` — same geometry as pair training and infer.
+    produced with ``TF.rotate`` - same geometry as pair training and infer.
     Returns a ``(4, C, H, W)`` tensor ordered as ``constants.ROTATIONS``;
     upright is index 0 for group cross-entropy.
     """

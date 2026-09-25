@@ -33,10 +33,10 @@ class RotationVote:
 
     `normalized_probs` is retained as an alias of `probs` for callers.
 
-    `best_deg` is argmax of `probs` — the counter-clockwise rotation
+    `best_deg` is argmax of `probs` - the counter-clockwise rotation
     that should be applied, matching ``TF.rotate``, to bring the image upright.
 
-    `margin` is top1 − top2 softmax probability; small values mean ambiguous.
+    `margin` is top1 - top2 softmax probability; small values mean ambiguous.
 
     `angle` is the weighted circular mean of the `probs` votes
     (secondary; prefer `best_deg` for discrete 90° correction).
@@ -121,7 +121,7 @@ def predict_rotations(
         std=std,
     )
     base = transform(img)
-    # expand=False: after center-crop the tensor is square; 90° keeps H×W.
+    # expand=False: after center-crop the tensor is square; 90° keeps HxW.
     # fill=0 is mean-gray in normalized space (same family as train).
     views = [
         TF.rotate(base, deg, expand=False)

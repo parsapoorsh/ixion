@@ -3,7 +3,7 @@
 A single output neuron predicts whether the image is upright (0°). Trained
 from scratch (no ImageNet weights). The backbone returns a spatial feature
 map; either spatial attention or global average pooling aggregates it
-before LayerNorm → Dropout → Linear.
+before LayerNorm -> Dropout -> Linear.
 """
 
 from __future__ import annotations
