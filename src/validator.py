@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Standalone validation CLI for a single checkpoint.
 
 Loads a checkpoint, builds the val dataset from ``config.DATASETS``

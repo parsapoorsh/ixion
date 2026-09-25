@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Single-phase training loop.
 
 Run from the project root:

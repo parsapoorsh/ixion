@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Interactive rotation-correction browser.
 
 Scans a directory, runs predict_rotations on every image in a background

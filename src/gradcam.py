@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """GradCAM visualiser for the upright detector.
 
 Shows the image at all 4 rotations; for each, displays its four-view
