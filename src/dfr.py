@@ -83,14 +83,17 @@ def load_checkpoint_model(
 
 
 def freeze_backbone(model: RotationModel, reinit_head: bool) -> None:
-    """Freeze the backbone; optionally reinitialise the head for a fresh fit.
+    """Freeze the backbone and pooling layer; optionally reinitialise the head.
 
     True DFR refits the classifier from scratch on the reweighting data, so
-    ``reinit_head`` defaults on. The backbone is put in eval mode as well so
-    its BatchNorm running stats stay fixed at the values the full model
-    converged to.
+    ``reinit_head`` defaults on. Everything outside ``model.head`` is frozen
+    (backbone + pooling layer, if it has parameters) and the backbone is put
+    in eval mode so its BatchNorm running stats stay fixed at the values the
+    full model converged to.
     """
     for p in model.backbone.parameters():
+        p.requires_grad_(False)
+    for p in model.pool.parameters():
         p.requires_grad_(False)
     model.backbone.eval()
 
