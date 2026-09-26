@@ -26,6 +26,7 @@ import matplotlib as mpl
 from matplotlib.figure import Figure
 from PIL import Image
 from torchvision import transforms as T
+from torchvision.transforms import functional as TF
 
 import constants
 from models.rotation import RotationModel
@@ -223,15 +224,19 @@ def compute_rotations(
     preprocess: T.Compose,
     device: torch.device,
 ) -> tuple[list[Image.Image], list[float], list[np.ndarray], torch.Tensor]:
+    # Display images: resize + center-crop, then PIL-rotate each view.
     crop = T.Compose([
         T.Resize(constants.RESIZE_SIZE),
         T.CenterCrop(constants.INPUT_SIZE),
     ])(pil_img)
-
     displays = [crop.rotate(a) if a != 0 else crop for a in constants.ROTATIONS]
-    tensors = torch.stack(
-        [preprocess(d) for d in displays]  # type: ignore[arg-type]
-    ).to(device)
+
+    # Model input: transform once (resize/crop/to_tensor/normalize), then
+    # rotate the tensor - same geometry as train/infer (RotationPairDataset,
+    # infer.predict_rotations), not PIL-rotate-then-transform.
+    base = preprocess(pil_img)
+    views = [TF.rotate(base, a, expand=False) for a in constants.ROTATIONS]
+    tensors = torch.stack(views).to(device)
 
     cams, logits = compute_gradcam_batch(model, tensors)
     probs = softmax(logits)
