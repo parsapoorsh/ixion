@@ -24,6 +24,7 @@ from typing import cast
 
 import torch
 from torch import nn
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -36,6 +37,18 @@ from stats import NormStats
 from utils.logsetup import setup_logging
 
 logger = logging.getLogger(__name__)
+
+# Short-schedule preset applied by --fine-tune; explicit CLI flags still win.
+# Lower backbone LR and weight decay keep the pretrained features close to
+# where they started while the new head catches up.
+FINE_TUNE_DEFAULTS = {
+    "pretrain": True,
+    "epochs": 5,
+    "lr": 1e-3,
+    "backbone_lr_mult": 0.1,
+    "warmup_epochs": 0.5,
+    "weight_decay": 0.05,
+}
 
 
 @dataclasses.dataclass
@@ -186,6 +199,7 @@ def setup_model(
     use_sam: bool = False,
     sam_rho: float = 0.05,
     backbone_lr_mult: float = 1.0,
+    pretrained: bool = False,
     compile_model: bool = True,
     resume_from: Path | None = None,
 ) -> tuple[
@@ -208,8 +222,9 @@ def setup_model(
         resume_payload = torch.load(resume_from, map_location=device, weights_only=False)
         resume_pooling = str(resume_payload.get("pooling", pooling))
 
+    # Resumes overwrite every weight anyway, so skip the download there.
     model = RotationModel(
-        pretrained=False,
+        pretrained=pretrained and resume_from is None,
         drop_rate=drop_rate,
         drop_path_rate=drop_path_rate,
         pooling=resume_pooling,
@@ -332,6 +347,7 @@ def train(
     use_sam: bool = False,
     sam_rho: float = 0.05,
     backbone_lr_mult: float = 1.0,
+    pretrained: bool = False,
     compile_model: bool = True,
     resume_from: Path | None = None,
 ) -> None:
@@ -363,9 +379,12 @@ def train(
         use_sam=use_sam,
         sam_rho=sam_rho,
         backbone_lr_mult=backbone_lr_mult,
+        pretrained=pretrained,
         compile_model=compile_model,
         resume_from=resume_from,
     )
+    if pretrained and resume_from is None:
+        logger.info("initialized backbone from ImageNet-pretrained weights")
 
     requested_total_steps = steps_per_epoch * epochs
     total_steps = saved_schedule_total_steps if saved_schedule_total_steps is not None else requested_total_steps
@@ -519,6 +538,7 @@ def train(
                 "schedule_total_steps": total_steps,
                 "schedule_warmup_steps": warmup_steps,
                 "pooling": pooling,
+                "pretrained": pretrained,
                 "stats": {"mean": list(stats.mean), "std": list(stats.std)},
             },
         )
@@ -532,6 +552,16 @@ def main(args) -> None:
 
     device = torch.device(args.device)
 
+    # Pretrained features expect the ImageNet normalization they were trained
+    # with; from-scratch runs compute stats over the train split instead.
+    pretrain_stats = (
+        NormStats(
+            mean=IMAGENET_DEFAULT_MEAN,
+            std=IMAGENET_DEFAULT_STD,
+        )
+        if args.pretrain
+        else None
+    )
     ds, stats = build_dataset(
         split="train",
         datasets=config.DATASETS,
@@ -539,6 +569,7 @@ def main(args) -> None:
         num_workers=args.num_workers,
         batch_size=args.batch_size,
         prefetch_factor=args.prefetch_factor,
+        stats=pretrain_stats,
         invalidate_cache=args.invalidate_cache,
         erasing_p=args.erasing_p,
         crop_policy=args.crop_policy,
@@ -570,6 +601,7 @@ def main(args) -> None:
         use_sam=args.sam,
         sam_rho=args.sam_rho,
         backbone_lr_mult=args.backbone_lr_mult,
+        pretrained=args.pretrain,
         compile_model=not args.no_compile,
         resume_from=args.resume,
     )
@@ -693,6 +725,20 @@ if __name__ == "__main__":
         help="delete cached file-index and per-dataset stats JSONs before running",
     )
     p.add_argument(
+        "--pretrain",
+        action="store_true",
+        help="initialize the backbone from timm's ImageNet weights and use ImageNet mean/std",
+    )
+    p.add_argument(
+        "--fine-tune",
+        action="store_true",
+        help=(
+            "short fine-tuning preset (implies --pretrain): "
+            + ", ".join(f"{k}={v}" for k, v in FINE_TUNE_DEFAULTS.items() if k != "pretrain")
+            + "; explicit flags override"
+        ),
+    )
+    p.add_argument(
         "--no-compile",
         action="store_true",
         help="disable torch.compile even when build dependencies are available",
@@ -703,6 +749,10 @@ if __name__ == "__main__":
         default=None,
         help="path to an epoch_NNN.pt checkpoint to resume from (model, EMA, optimizer, and saved schedule restored)",
     )
+    # Swap in the preset as defaults before the real parse so any flag given
+    # explicitly on the command line still takes precedence.
+    if p.parse_known_args()[0].fine_tune:
+        p.set_defaults(**FINE_TUNE_DEFAULTS)
     args = p.parse_args()
 
     main(args)
