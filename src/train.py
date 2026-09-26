@@ -145,6 +145,7 @@ def setup_model(
     lr: float,
     weight_decay: float,
     ema_decay: float,
+    ema_warmup_steps: float,
     drop_rate: float = 0.2,
     drop_path_rate: float = 0.1,
     pooling: str = "avg",
@@ -179,7 +180,11 @@ def setup_model(
         pooling=resume_pooling,
     ).to(device)
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
-    ema = ModelEMA(model, decay=ema_decay)
+    ema = ModelEMA(
+        model,
+        decay=ema_decay,
+        warmup_steps=ema_warmup_steps,
+    )
 
     if use_sam:
         optimizer: torch.optim.Optimizer = SAM(
@@ -278,12 +283,18 @@ def train(
     pooling: str = "avg",
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
-    ema_decay: float = 0.9999,
+    ema_horizon_epochs: float = 0.4,
     use_sam: bool = False,
     sam_rho: float = 0.05,
     compile_model: bool = True,
     resume_from: Path | None = None,
 ) -> None:
+    steps_per_epoch = len(train_loader)
+    # Per-step EMA decay so the shadow averages over ema_horizon_epochs
+    # epochs regardless of --batch-size; the warmup covers one epoch.
+    ema_decay = math.exp(-1.0 / (ema_horizon_epochs * steps_per_epoch))
+    ema_warmup_steps = steps_per_epoch
+
     (
         model,
         ema,
@@ -298,6 +309,7 @@ def train(
         lr=lr,
         weight_decay=weight_decay,
         ema_decay=ema_decay,
+        ema_warmup_steps=ema_warmup_steps,
         drop_rate=drop_rate,
         drop_path_rate=drop_path_rate,
         pooling=pooling,
@@ -307,10 +319,6 @@ def train(
         resume_from=resume_from,
     )
 
-    steps_per_epoch = len(train_loader)
-    # EMA warmup is expressed in steps; anchor it to the epoch length so its
-    # duration in samples is the same regardless of --batch-size.
-    ema.warmup_steps = steps_per_epoch
     requested_total_steps = steps_per_epoch * epochs
     total_steps = (
         saved_schedule_total_steps
