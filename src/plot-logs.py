@@ -109,7 +109,6 @@ def plot(
     save_path: Path | None = None,
     show: bool = True,
     trend_window: int = 0,
-    show_trend: bool = True,
 ) -> None:
     x = np.arange(len(records))  # always continuous
 
@@ -124,6 +123,8 @@ def plot(
 
     for ax, metric in zip(axes, METRICS, strict=True):
         y = np.array([getattr(r, metric) for r in records])
+        trend = smooth_trend(y, window)
+
         ax.plot(
             x,
             y,
@@ -131,14 +132,13 @@ def plot(
             linewidth=1.0,
             label="raw",
         )
-        if show_trend:
-            ax.plot(
-                x,
-                smooth_trend(y, window),
-                color="C1",
-                linewidth=2.0,
-                label="trend",
-            )
+        ax.plot(
+            x,
+            trend,
+            color="C1",
+            linewidth=2.0,
+            label="trend",
+        )
         ax.set_title(metric)
         ax.set_xlabel("step")
         ax.grid(True, alpha=0.3)
@@ -197,11 +197,6 @@ def main() -> None:
         default=0,
         help="rolling-mean window for the trend overlay (0 = auto, ~2.5%% of points)",
     )
-    parser.add_argument(
-        "--no-trend",
-        action="store_true",
-        help="disable the smoothed trend overlay",
-    )
     args = parser.parse_args()
 
     if not args.logfile.is_file():
@@ -215,7 +210,6 @@ def main() -> None:
         save_path=args.save,
         show=not args.no_show,
         trend_window=args.trend_window,
-        show_trend=not args.no_trend,
     )
 
 
