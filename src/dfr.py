@@ -37,7 +37,7 @@ from tqdm.auto import tqdm
 import config
 import constants
 from builders import build_train_transform
-from datasets import ImageLoader, RotationGroupDataset
+from datasets import ImageLoader, RotationPairDataset
 from models import RotationModel
 from stats import NormStats
 from utils.index import index_files
@@ -72,7 +72,7 @@ def load_checkpoint_model(
 
     model = RotationModel(
         pretrained=False,
-        pooling=payload.get("pooling", "attention"),
+        pooling=payload.get("pooling", "avg"),
     ).to(device)
     model.load_state_dict(payload[state_key])
     logger.info(
@@ -114,7 +114,7 @@ def build_head_loader(
     prefetch_factor: int,
     invalidate_cache: bool,
 ) -> DataLoader:
-    """Index the reweighting roots and wrap them as a rotation-group loader.
+    """Index the reweighting roots and wrap them as a rotation-pair loader.
 
     Indexed under its own cache name so it never collides with the main
     train/val file indexes.
@@ -126,11 +126,11 @@ def build_head_loader(
         invalidate_cache=invalidate_cache,
     )
     transform = build_train_transform(mean=stats.mean, std=stats.std)
-    dataset = RotationGroupDataset(
+    dataset = RotationPairDataset(
         base=ImageLoader(files=files),
         transform=transform,
     )
-    logger.info("DFR reweighting set: %d files -> %d groups", len(files), len(dataset))
+    logger.info("DFR reweighting set: %d files -> %d pairs", len(files), len(dataset))
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -152,8 +152,7 @@ def retrain_head(
 ) -> None:
     """Retrain the head only, with the backbone frozen in eval mode.
 
-    Each group contributes all four rotations; the head is trained with
-    group cross-entropy (target index 0), matching the main training loop.
+    Same binary BCE objective as the main training loop.
     """
     optimizer = torch.optim.AdamW(
         model.head.parameters(),
@@ -161,8 +160,7 @@ def retrain_head(
         betas=(0.9, 0.999),
         weight_decay=weight_decay,
     )
-    loss_fn = nn.CrossEntropyLoss()
-    n_rots = len(constants.ROTATIONS)
+    loss_fn = nn.BCEWithLogitsLoss()
 
     for epoch in range(epochs):
         model.head.train()
@@ -178,44 +176,38 @@ def retrain_head(
             leave=False,
             file=sys.stdout,
         )
-        for step, groups in enumerate(pbar):
-            groups = groups.to(device, non_blocking=True)
-            batch_groups, _, channels, height, width = groups.shape
-            views = groups.reshape(
-                batch_groups * n_rots,
-                channels,
-                height,
-                width,
-            ).contiguous(memory_format=torch.channels_last)
-
-            targets = torch.zeros(
-                batch_groups,
-                dtype=torch.long,
-                device=device,
+        for step, (imgs, labels) in enumerate(pbar):
+            imgs = imgs.to(
+                device,
+                non_blocking=True,
+                memory_format=torch.channels_last,
             )
+            labels = labels.to(device, non_blocking=True).float()
+
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-                logits = model(views).view(batch_groups, n_rots)
-                loss = loss_fn(logits, targets)
+                logits = model(imgs)
+                loss = loss_fn(logits, labels)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.head.parameters(), grad_clip)
             optimizer.step()
 
-            n = batch_groups
+            n = imgs.size(0)
             loss_sum += float(loss.detach()) * n
-            correct += int((logits.detach().argmax(dim=-1) == 0).sum())
+            preds = (logits.detach() > 0).float()
+            correct += int((preds == labels).sum())
             seen += n
 
             if step % constants.LOG_STEP == 0:
                 pbar.set_postfix(
-                    group4=f"{correct / max(1, seen):.5f}",
+                    acc=f"{correct / max(1, seen):.5f}",
                     loss=f"{loss_sum / max(1, seen):.5f}",
                 )
 
         dt = time.monotonic() - epoch_start
         logger.info(
-            "dfr epoch %d done in %.0fs: loss=%.5f group4_acc=%.5f",
+            "dfr epoch %d done in %.0fs: loss=%.5f acc=%.5f",
             epoch,
             dt,
             loss_sum / max(1, seen),
@@ -335,7 +327,7 @@ if __name__ == "__main__":
         "--batch-size",
         type=int,
         required=True,
-        help="base-image groups per step",
+        help="images per step",
     )
     p.add_argument(
         "--num-workers",

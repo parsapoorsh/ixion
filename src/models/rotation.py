@@ -37,7 +37,7 @@ class RotationModel(nn.Module):
         pretrained: bool = False,
         drop_rate: float = 0.2,
         drop_path_rate: float = 0.1,
-        pooling: str = "attention",
+        pooling: str = "avg",
     ) -> None:
         super().__init__()
         self.backbone = timm.create_model(

@@ -3,12 +3,10 @@
 Image opening is delegated to image_io.open_rgb so the JXL handler and the
 truncated-image tolerance are registered in exactly one place.
 
-Train uses ``RotationGroupDataset``: each item is all four 90° views of one
-base image (shared train transform, then ``TF.rotate``), for group
-cross-entropy over P(upright) logits. Val uses ``RotationPairDataset``:
-flattened single-view samples with binary upright labels (one positive and
-three negatives per base), matching the validator's group4 bookkeeping.
-Filesystem scanning lives in utils.index; transform recipes live in builders.py.
+Each base image yields four samples - one per rotation in {0, 90, 180, 270}.
+The label is binary: 1.0 when the view is upright (rotation 0), else 0.0.
+Train and val both use ``RotationPairDataset``. Filesystem scanning lives
+in utils.index; transform recipes live in builders.py.
 """
 
 from __future__ import annotations
@@ -176,7 +174,7 @@ def build_dataset(
     invalidate_cache: bool = False,
     erasing_p: float = 0.25,
     crop_policy: str = "random",
-) -> tuple[RotationGroupDataset | RotationPairDataset, NormStats]:
+) -> tuple[RotationPairDataset, NormStats]:
     roots = [
         root
         for ds in datasets
@@ -232,7 +230,7 @@ def build_dataset(
         if split == "train"
         else build_eval_transform(mean=stats.mean, std=stats.std)
     )
-    base = ImageLoader(files=files)
-    if split == "train":
-        return RotationGroupDataset(base=base, transform=transform), stats
-    return RotationPairDataset(base=base, transform=transform), stats
+    return RotationPairDataset(
+        base=ImageLoader(files=files),
+        transform=transform,
+    ), stats

@@ -5,12 +5,8 @@ Run from the project root:
     venv/bin/python src/train.py --device cuda --batch-size N \\
         --num-workers N --prefetch-factor N
 
-Training uses group cross-entropy: each base image contributes all four
-90° views, the model scores P(upright) per view, and the loss is CE over
-those four logits with target index 0 (upright). ``--batch-size`` is the
-number of views through the model per step and must be divisible by 4.
-
-Validation is a separate process - see ``validator.py``.
+Each view is a binary upright/not example (BCEWithLogitsLoss). Four-way
+ranking is eval/infer only - see ``validator.py``.
 """
 
 from __future__ import annotations
@@ -151,7 +147,7 @@ def setup_model(
     ema_decay: float,
     drop_rate: float = 0.2,
     drop_path_rate: float = 0.1,
-    pooling: str = "attention",
+    pooling: str = "avg",
     use_sam: bool = False,
     sam_rho: float = 0.05,
     compile_model: bool = True,
@@ -202,9 +198,10 @@ def setup_model(
             betas=(0.9, 0.999),
             weight_decay=weight_decay,
         )
-    # Product metric is argmax over the four upright logits; train that
-    # ranking directly with group CE (target = upright index 0).
-    loss_fn = nn.CrossEntropyLoss()
+    # Inference picks the rotation with the highest upright logit
+    # (argmax over 4 views), so the absolute decision threshold
+    # doesn't matter - only the relative ranking.
+    loss_fn = nn.BCEWithLogitsLoss()
 
     start_epoch = 0
     schedule_total_steps = None
@@ -278,7 +275,7 @@ def train(
     weight_decay: float = 0.1,
     drop_rate: float = 0.2,
     drop_path_rate: float = 0.1,
-    pooling: str = "attention",
+    pooling: str = "avg",
     warmup_epochs: int = 5,
     grad_clip: float = 1.0,
     ema_decay: float = 0.9999,
@@ -352,17 +349,13 @@ def train(
         pending_n = 0
         pending_steps = 0
 
-        n_rots = len(constants.ROTATIONS)
-        for groups in pbar:
-            # groups: (B, 4, C, H, W) - B base images, four shared-transform views
-            groups = groups.to(device, non_blocking=True)
-            batch_groups, _, channels, height, width = groups.shape
-            views = groups.reshape(
-                batch_groups * n_rots,
-                channels,
-                height,
-                width,
-            ).contiguous(memory_format=torch.channels_last)
+        for imgs, labels in pbar:
+            imgs = imgs.to(
+                device,
+                non_blocking=True,
+                memory_format=torch.channels_last,
+            )
+            labels = labels.to(device, non_blocking=True).float()
 
             scale = cosine_with_warmup(
                 global_step,
@@ -374,14 +367,9 @@ def train(
             for group in optimizer.param_groups:
                 group["lr"] = lr * scale
 
-            targets = torch.zeros(
-                batch_groups,
-                dtype=torch.long,
-                device=device,
-            )
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
-                logits = model(views).view(batch_groups, n_rots)
-                loss = loss_fn(logits, targets)
+                logits = model(imgs)
+                loss = loss_fn(logits, labels)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -392,7 +380,7 @@ def train(
                 optimizer.first_step(zero_grad=True)
                 disable_running_stats(model)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-                    loss_adv = loss_fn(model(views).view(batch_groups, n_rots), targets)
+                    loss_adv = loss_fn(model(imgs), labels)
                 loss_adv.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(),
@@ -408,15 +396,18 @@ def train(
                 optimizer.step()
             ema.update(model)
 
-            # Train accuracy = group4 (argmax picks upright index 0).
-            n = batch_groups
+            preds = (logits > 0).float()
+            n = imgs.size(0)
             loss_buf += loss.detach() * n
-            correct_buf += (logits.argmax(dim=-1) == 0).sum()
+            correct_buf += (preds == labels).sum()
             gn_buf += grad_norm.detach()
             pending_n += n
             pending_steps += 1
 
             if global_step % constants.LOG_STEP == 0:
+                window_loss = loss_buf.item() / max(1, pending_n)
+                window_acc = int(correct_buf.item()) / max(1, pending_n)
+                window_gn = gn_buf.item() / max(1, pending_steps)
                 epoch_stats.merge(
                     loss_sum=loss_buf.item(),
                     correct=int(correct_buf.item()),
@@ -432,15 +423,15 @@ def train(
 
                 lr_now = optimizer.param_groups[0]["lr"]
                 pbar.set_postfix(
-                    group4=f"{epoch_stats.acc:.5f}",
-                    loss=f"{epoch_stats.avg_loss:.5f}",
+                    acc=f"{window_acc:.5f}",
+                    loss=f"{window_loss:.5f}",
                     lr=f"{lr_now:.2e}",
-                    gn=f"{epoch_stats.avg_grad_norm:.5f}",
+                    gn=f"{window_gn:.5f}",
                 )
                 logger.info(
-                    "epoch %d step %d/%d loss=%.5f group4_acc=%.5f lr=%.2e grad_norm=%.5f",
+                    "epoch %d step %d/%d loss=%.5f acc=%.5f lr=%.2e grad_norm=%.5f",
                     epoch, global_step, total_steps,
-                    epoch_stats.avg_loss, epoch_stats.acc, lr_now, epoch_stats.avg_grad_norm,
+                    window_loss, window_acc, lr_now, window_gn,
                 )
             global_step += 1
 
@@ -455,10 +446,10 @@ def train(
 
         dt = time.monotonic() - epoch_start
         logger.info(
-            "epoch %d done in %.0fs, throughput %.1f views/s",
+            "epoch %d done in %.0fs, throughput %.1f img/s",
             epoch,
             dt,
-            epoch_stats.seen * n_rots / dt,
+            epoch_stats.seen / dt,
         )
 
         ckpt = checkpoint_dir / f"epoch_{epoch:03d}.pt"
@@ -484,13 +475,6 @@ def main(args) -> None:
     setup_logging(constants.LOGS_DIR)
 
     device = torch.device(args.device)
-    n_rots = len(constants.ROTATIONS)
-    if args.batch_size % n_rots != 0:
-        raise SystemExit(
-            f"--batch-size must be divisible by {n_rots} "
-            f"(got {args.batch_size}); it counts views through the model"
-        )
-    groups_per_batch = args.batch_size // n_rots
 
     ds, stats = build_dataset(
         split="train",
@@ -506,7 +490,7 @@ def main(args) -> None:
 
     dl = DataLoader(
         ds,
-        batch_size=groups_per_batch,
+        batch_size=args.batch_size,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=device.type == "cuda",
@@ -546,8 +530,7 @@ if __name__ == "__main__":
         "--batch-size",
         type=int,
         required=True,
-        help="views through the model per step (must be divisible by 4; "
-             "groups per step = batch-size / 4)",
+        help="images per training step",
     )
     p.add_argument(
         "--num-workers",
@@ -606,7 +589,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--pooling",
         choices=["attention", "avg"],
-        default="attention",
+        default="avg",
         help="how to aggregate backbone features before the head",
     )
     p.add_argument(
