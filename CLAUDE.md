@@ -56,6 +56,17 @@ venv/bin/python src/train.py \
     --prefetch-factor 4 --seed 0
 ```
 
+**Fine-tune (ImageNet-pretrained backbone, short schedule):**
+```
+venv/bin/python src/train.py \
+    --device cuda --batch-size 256 --num-workers 8 \
+    --prefetch-factor 4 --seed 0 --fine-tune
+```
+`--fine-tune` implies `--pretrain` (timm ImageNet weights + ImageNet mean/std) and
+sets a 5-epoch preset (peak `--lr 1e-3`, `--backbone-lr-mult 0.1`, `--warmup-epochs 0.5`,
+`--weight-decay 0.05`). Any flag passed explicitly overrides the preset; `--pretrain`
+alone uses the same pretrained init but keeps the from-scratch schedule defaults.
+
 **Validate a checkpoint:**
 ```
 venv/bin/python src/validator.py \
@@ -83,8 +94,9 @@ venv/bin/python src/gradcam.py \
 
 ## Key design decisions
 
-- **No pretrained weights.** The model is trained from scratch; ImageNet weights
-  encode strong orientation priors that would bias the classifier.
+- **From scratch by default.** `train.py` builds the backbone with `pretrained=False`.
+  `--pretrain` opts into timm's ImageNet weights, and `--fine-tune` is a short-schedule
+  preset over them (see Running).
 - **Label-safe augmentation only.** No spatial flips/rotations (would corrupt the
   binary label). Train uses ColorJitter, RandomGrayscale, and RandomErasing after
   normalize; backbone uses stochastic depth (`drop_path_rate=0.1`).
