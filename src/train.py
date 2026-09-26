@@ -308,6 +308,9 @@ def train(
     )
 
     steps_per_epoch = len(train_loader)
+    # EMA warmup is expressed in steps; anchor it to the epoch length so its
+    # duration in samples is the same regardless of --batch-size.
+    ema.warmup_steps = steps_per_epoch
     requested_total_steps = steps_per_epoch * epochs
     total_steps = (
         saved_schedule_total_steps

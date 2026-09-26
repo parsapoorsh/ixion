@@ -24,10 +24,10 @@ class ModelEMA:
         self,
         model: nn.Module,
         decay: float = 0.9999,
-        warmup_denom: float = 1000.0,
+        warmup_steps: float = 1000.0,
     ) -> None:
         self.decay = decay
-        self.warmup_denom = warmup_denom
+        self.warmup_steps = warmup_steps
         self.step = 0
         self.module = deepcopy(model)
         self.module.train(False)
@@ -40,10 +40,10 @@ class ModelEMA:
         # random-init model, so a constant high decay leaves the EMA
         # weighted heavily toward noise for thousands of steps. Ramp the
         # effective decay from ~0 up to self.decay with an exponential
-        # time constant of warmup_denom steps (the old rational ramp only
+        # time constant of warmup_steps (the old rational ramp only
         # converged after ~10M steps, far past any run here).
         self.step += 1
-        d = self.decay * (1.0 - math.exp(-self.step / self.warmup_denom))
+        d = self.decay * (1.0 - math.exp(-self.step / self.warmup_steps))
         for ema_p, p in zip(self.module.parameters(), model.parameters()):
             ema_p.mul_(d).add_(p.detach(), alpha=1.0 - d)
         for ema_b, b in zip(self.module.buffers(), model.buffers()):
