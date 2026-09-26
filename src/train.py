@@ -705,7 +705,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--pooling",
         choices=["attention", "avg"],
-        default="avg",
+        default="attention",
         help="how to aggregate backbone features before the head",
     )
     p.add_argument(
