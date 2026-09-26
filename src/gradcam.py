@@ -47,7 +47,7 @@ def load_model(
     else:
         cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
         stats = load_stats_cache(cache_file)
-    model = RotationModel(pooling=payload.get("pooling", "attention"))
+    model = RotationModel(pooling=payload.get("pooling", "avg"))
     model.load_state_dict(payload["ema"])
     model.to(device)
     model.train(False)

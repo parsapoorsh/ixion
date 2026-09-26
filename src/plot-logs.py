@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Parse training log lines and plot metrics (loss, group4_acc, lr, grad_norm).
+Parse training log lines and plot metrics (loss, acc, lr, grad_norm).
 
 Usage:
   python plot-logs.py train.log
@@ -20,16 +20,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Matches lines like:
-# 2026-09-25 02:29:09 INFO __main__: epoch 0 step 450/11550930 loss=1.52132 group4_acc=0.24612 lr=7.01e-08 grad_norm=62.26751
+# 2026-09-25 02:29:09 INFO __main__: epoch 0 step 450/11550930 loss=1.52132 acc=0.24612 lr=7.01e-08 grad_norm=62.26751
 LINE_RE = re.compile(
     r"epoch\s+(\d+)\s+step\s+(\d+)/(\d+)\s+"
     r"loss=([0-9.eE+-]+)\s+"
-    r"group4_acc=([0-9.eE+-]+)\s+"
+    r"(?:group4_)?acc=([0-9.eE+-]+)\s+"
     r"lr=([0-9.eE+-]+)\s+"
     r"grad_norm=([0-9.eE+-]+)"
 )
 
-METRICS = ("loss", "group4_acc", "lr", "grad_norm")
+METRICS = ("loss", "acc", "lr", "grad_norm")
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class Record:
     step: int
     total_steps: int
     loss: float
-    group4_acc: float
+    acc: float
     lr: float
     grad_norm: float
 
@@ -61,7 +61,7 @@ def parse_log(path: Path, epoch: Optional[int] = None) -> list[Record]:
                     step=int(step),
                     total_steps=int(total),
                     loss=float(loss),
-                    group4_acc=float(acc),
+                    acc=float(acc),
                     lr=float(lr),
                     grad_norm=float(grad),
                 )

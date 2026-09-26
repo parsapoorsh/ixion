@@ -191,7 +191,7 @@ def validate_checkpoint(
 
     model = RotationModel(
         pretrained=False,
-        pooling=payload.get("pooling", "attention"),
+        pooling=payload.get("pooling", "avg"),
     ).to(device)
     model.load_state_dict(payload[state_key])
 
