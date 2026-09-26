@@ -100,6 +100,35 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def split_legacy_optimizer_state(
+    state: dict,
+    optimizer: torch.optim.Optimizer,
+) -> dict:
+    """Split a single-group optimizer state into the current backbone/head groups.
+
+    Older checkpoints used one group over model.parameters(); the current
+    groups list the same params in the same order, so slicing the index list
+    maps them one-to-one.
+    """
+    saved_groups = state["param_groups"]
+    if len(saved_groups) != 1 or len(optimizer.param_groups) == 1:
+        return state
+    indices = list(saved_groups[0]["params"])
+    new_groups = []
+    offset = 0
+    for group in optimizer.param_groups:
+        count = len(group["params"])
+        new_groups.append(
+            {
+                **saved_groups[0],
+                "params": indices[offset : offset + count],
+                "lr_scale": group["lr_scale"],
+            }
+        )
+        offset += count
+    return {**state, "param_groups": new_groups}
+
+
 def cosine_with_warmup(
     step: int,
     total_steps: int,
@@ -156,6 +185,7 @@ def setup_model(
     pooling: str = "avg",
     use_sam: bool = False,
     sam_rho: float = 0.05,
+    backbone_lr_mult: float = 1.0,
     compile_model: bool = True,
     resume_from: Path | None = None,
 ) -> tuple[
@@ -191,9 +221,15 @@ def setup_model(
         warmup_steps=ema_warmup_steps,
     )
 
+    # lr_scale is applied on top of the schedule each step; a lower backbone
+    # scale keeps pretrained features from being wrecked while the head learns.
+    param_groups = [
+        {"params": model.backbone.parameters(), "lr_scale": backbone_lr_mult},
+        {"params": [p for name, p in model.named_parameters() if not name.startswith("backbone.")], "lr_scale": 1.0},
+    ]
     if use_sam:
         optimizer: torch.optim.Optimizer = SAM(
-            model.parameters(),
+            param_groups,
             base_optimizer=torch.optim.AdamW,
             rho=sam_rho,
             lr=lr,
@@ -203,7 +239,7 @@ def setup_model(
         logger.info("using SAM (rho=%.3f) over AdamW", sam_rho)
     else:
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            param_groups,
             lr=lr,
             betas=(0.9, 0.999),
             weight_decay=weight_decay,
@@ -228,7 +264,12 @@ def setup_model(
             # Saved state is plain base-optimizer (AdamW) state; load it into
             # the base so resume works whether or not SAM wraps it this run.
             base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
-            base_optimizer.load_state_dict(payload["optimizer"])
+            base_optimizer.load_state_dict(
+                split_legacy_optimizer_state(
+                    payload["optimizer"],
+                    base_optimizer,
+                )
+            )
 
         if "rng_cpu" in payload:
             torch.set_rng_state(payload["rng_cpu"].cpu())
@@ -290,6 +331,7 @@ def train(
     ema_horizon_epochs: float = 0.4,
     use_sam: bool = False,
     sam_rho: float = 0.05,
+    backbone_lr_mult: float = 1.0,
     compile_model: bool = True,
     resume_from: Path | None = None,
 ) -> None:
@@ -320,6 +362,7 @@ def train(
         pooling=pooling,
         use_sam=use_sam,
         sam_rho=sam_rho,
+        backbone_lr_mult=backbone_lr_mult,
         compile_model=compile_model,
         resume_from=resume_from,
     )
@@ -373,7 +416,7 @@ def train(
 
             # set lr
             for group in optimizer.param_groups:
-                group["lr"] = lr * scale
+                group["lr"] = lr * scale * group.get("lr_scale", 1.0)
 
             with torch.autocast(device_type=device.type, dtype=autocast):  # pyright: ignore[reportPrivateImportUsage]
                 logits = model(imgs)
@@ -429,7 +472,7 @@ def train(
                 pending_n = 0
                 pending_steps = 0
 
-                lr_now = optimizer.param_groups[0]["lr"]
+                lr_now = optimizer.param_groups[-1]["lr"]
                 pbar.set_postfix(
                     acc=f"{window_acc:.5f}",
                     loss=f"{window_loss:.5f}",
@@ -526,6 +569,7 @@ def main(args) -> None:
         grad_clip=args.grad_clip,
         use_sam=args.sam,
         sam_rho=args.sam_rho,
+        backbone_lr_mult=args.backbone_lr_mult,
         compile_model=not args.no_compile,
         resume_from=args.resume,
     )
@@ -577,6 +621,12 @@ if __name__ == "__main__":
         type=float,
         default=3e-4,
         help="peak learning rate (after warmup, before cosine decay)",
+    )
+    p.add_argument(
+        "--backbone-lr-mult",
+        type=float,
+        default=1.0,
+        help="backbone LR as a fraction of --lr (head always uses the full --lr)",
     )
     p.add_argument(
         "--warmup-epochs",
