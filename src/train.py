@@ -521,6 +521,7 @@ def main(args) -> None:
         drop_rate=args.dropout,
         drop_path_rate=args.drop_path,
         pooling=args.pooling,
+        grad_clip=args.grad_clip,
         use_sam=args.sam,
         sam_rho=args.sam_rho,
         compile_model=not args.no_compile,
@@ -586,6 +587,12 @@ if __name__ == "__main__":
         type=float,
         default=0.1,
         help="backbone stochastic depth rate",
+    )
+    p.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="max total gradient norm before clipping",
     )
     p.add_argument(
         "--erasing-p",
