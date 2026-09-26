@@ -9,6 +9,7 @@ better than the running model.
 
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
@@ -37,10 +38,12 @@ class ModelEMA:
     def update(self, model: nn.Module) -> None:
         # Bias-corrected warm-up: the shadow starts as a deepcopy of the
         # random-init model, so a constant high decay leaves the EMA
-        # weighted heavily toward noise for thousands of steps. Clamp the
-        # effective decay so it ramps from ~0 up to self.decay.
+        # weighted heavily toward noise for thousands of steps. Ramp the
+        # effective decay from ~0 up to self.decay with an exponential
+        # time constant of warmup_denom steps (the old rational ramp only
+        # converged after ~10M steps, far past any run here).
         self.step += 1
-        d = min(self.decay, (1.0 + self.step) / (self.warmup_denom + self.step))
+        d = self.decay * (1.0 - math.exp(-self.step / self.warmup_denom))
         for ema_p, p in zip(self.module.parameters(), model.parameters()):
             ema_p.mul_(d).add_(p.detach(), alpha=1.0 - d)
         for ema_b, b in zip(self.module.buffers(), model.buffers()):
