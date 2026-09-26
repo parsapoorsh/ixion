@@ -4,7 +4,6 @@ from pathlib import Path
 
 from datasets import DatasetSpec
 
-
 # ImageNet normalization constants - left here as a convenience for anyone
 # who wants to pin a DatasetSpec to fixed stats instead of computing them.
 # Defaults below pass None so stats.get_stats derives mean/std from the

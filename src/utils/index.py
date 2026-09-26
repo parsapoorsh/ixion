@@ -43,7 +43,7 @@ def index_files(
     roots: Sequence[Path],
     cache_dir: Path,
     invalidate_cache: bool = False,
-) -> "PathList":
+) -> PathList:
     """Recursively list every regular file under the given roots, cached on disk.
 
     No extension filter - the dataset directories are expected to contain only

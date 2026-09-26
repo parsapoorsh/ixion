@@ -68,8 +68,8 @@ def vote_from_probs(probs: np.ndarray) -> RotationVote:
     angle = float(np.rad2deg(np.arctan2(y, x)) % 360.0)
 
     return RotationVote(
-        probs={deg: float(p) for deg, p in zip(ROTATIONS, probs)},
-        normalized_probs={deg: float(p) for deg, p in zip(ROTATIONS, norm)},
+        probs={deg: float(p) for deg, p in zip(ROTATIONS, probs, strict=True)},
+        normalized_probs={deg: float(p) for deg, p in zip(ROTATIONS, norm, strict=True)},
         best_deg=best_deg,
         margin=margin,
         angle=angle,

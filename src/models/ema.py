@@ -44,9 +44,9 @@ class ModelEMA:
         # converged after ~10M steps, far past any run here).
         self.step += 1
         d = self.decay * (1.0 - math.exp(-self.step / self.warmup_steps))
-        for ema_p, p in zip(self.module.parameters(), model.parameters()):
+        for ema_p, p in zip(self.module.parameters(), model.parameters(), strict=True):
             ema_p.mul_(d).add_(p.detach(), alpha=1.0 - d)
-        for ema_b, b in zip(self.module.buffers(), model.buffers()):
+        for ema_b, b in zip(self.module.buffers(), model.buffers(), strict=True):
             ema_b.copy_(b)
 
     def state_dict(self) -> dict:

@@ -31,7 +31,6 @@ from models import RotationModel
 from stats import NormStats, load_stats_cache
 from utils.image_io import open_rgb
 
-
 IMAGE_EXTS = frozenset({
     ".jpg", ".jpeg",
     ".png",
@@ -179,6 +178,7 @@ def prefetch_worker(
 def show_result(result: InferResult, index: int, total: int) -> None:
     """Open a blocking tkinter window for *result*; returns when it is closed."""
     import tkinter as tk
+
     from PIL import ImageTk
 
     prob_str = "  ".join(

@@ -19,10 +19,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib as mpl
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib as mpl
 from matplotlib.figure import Figure
 from PIL import Image
 from torchvision import transforms as T
@@ -32,7 +32,6 @@ import constants
 from models.rotation import RotationModel
 from stats import NormStats, load_stats_cache
 from utils.image_io import open_rgb
-
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -160,7 +159,7 @@ def compute_guided_gradcam_batch(
     finally:
         for h in handles:
             h.remove()
-        for sm, was_inplace in zip(silu_modules, original_inplace):
+        for sm, was_inplace in zip(silu_modules, original_inplace, strict=True):
             sm.inplace = was_inplace
 
     grad = x.grad.abs().sum(dim=1)                  # type: ignore[union-attr]  # (B, H, W)
@@ -197,7 +196,7 @@ def visualise_grid(
     axes = fig.subplots(2, 2)
 
     for idx, (angle, heat, prob, disp) in enumerate(
-        zip(constants.ROTATIONS, heatmaps, probs, displays)
+        zip(constants.ROTATIONS, heatmaps, probs, displays, strict=True)
     ):
         img_overlay = make_overlay(disp, heat, colormap=colormap)
         ax = axes[idx // 2, idx % 2]

@@ -14,7 +14,6 @@ import argparse
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -43,7 +42,7 @@ class Record:
     grad_norm: float
 
 
-def parse_log(path: Path, epoch: Optional[int] = None) -> list[Record]:
+def parse_log(path: Path, epoch: int | None = None) -> list[Record]:
     """Return list of Records, optionally filtered to a single epoch."""
     records: list[Record] = []
     with path.open() as f:
@@ -84,8 +83,8 @@ def parse_log(path: Path, epoch: Optional[int] = None) -> list[Record]:
 
 def plot(
     records: list[Record],
-    epoch: Optional[int],
-    save_path: Optional[Path] = None,
+    epoch: int | None,
+    save_path: Path | None = None,
     show: bool = True,
 ) -> None:
     x = np.arange(len(records))  # always continuous
@@ -100,7 +99,7 @@ def plot(
     )
     fig.suptitle(title, fontsize=14)
 
-    for ax, metric in zip(axes, METRICS):
+    for ax, metric in zip(axes, METRICS, strict=True):
         y = np.array([getattr(r, metric) for r in records])
         ax.plot(x, y, linewidth=1.2)
         ax.set_title(metric)
