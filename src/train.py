@@ -139,6 +139,14 @@ def can_compile_model(device: torch.device) -> tuple[bool, str | None]:
     return True, None
 
 
+def autocast_dtype(device: torch.device) -> torch.dtype:
+    # bfloat16 needs Ampere+ tensor cores. Older GPUs (e.g. Turing GTX 16xx)
+    # emulate it, which also breaks torch.compile's layout propagation, so
+    # fall back to fp32 there.
+    capability = torch.cuda.get_device_capability(device)
+    return torch.bfloat16 if capability[0] >= 8 else torch.float32
+
+
 def setup_model(
     device: torch.device,
     seed: int,
@@ -295,6 +303,7 @@ def train(
     ema_decay = math.exp(-1.0 / (ema_horizon_epochs * steps_per_epoch))
     ema_warmup_steps = steps_per_epoch
 
+    autocast = autocast_dtype(device)
     (
         model,
         ema,
@@ -378,7 +387,7 @@ def train(
             for group in optimizer.param_groups:
                 group["lr"] = lr * scale
 
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16):  # pyright: ignore[reportPrivateImportUsage]
+            with torch.autocast(device_type=device.type, dtype=autocast):  # pyright: ignore[reportPrivateImportUsage]
                 logits = model(imgs)
                 loss = loss_fn(logits, labels)
 
@@ -390,7 +399,7 @@ def train(
                 # recomputes the gradient there and applies the real update.
                 optimizer.first_step(zero_grad=True)
                 disable_running_stats(model)
-                with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device.type, dtype=autocast):
                     loss_adv = loss_fn(model(imgs), labels)
                 loss_adv.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(
