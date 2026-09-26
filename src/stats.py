@@ -49,7 +49,10 @@ def save_stats_cache(
     stats: NormStats,
     fingerprint: str | None = None,
 ) -> None:
-    payload = {"mean": list(stats.mean), "std": list(stats.std)}
+    payload: dict[str, list[float] | str] = {
+        "mean": list(stats.mean),
+        "std": list(stats.std),
+    }
     if fingerprint is not None:
         payload["fingerprint"] = fingerprint
     path.parent.mkdir(parents=True, exist_ok=True)

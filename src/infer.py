@@ -123,10 +123,7 @@ def predict_rotations(
     base = transform(img)
     # expand=False: after center-crop the tensor is square; 90° keeps HxW.
     # fill=0 is mean-gray in normalized space (same family as train).
-    views = [
-        TF.rotate(base, deg, expand=False)
-        for deg in ROTATIONS
-    ]
+    views = [TF.rotate(base, deg, expand=False) for deg in ROTATIONS]
     batch = torch.stack(views).to(device, non_blocking=True)
 
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):

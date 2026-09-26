@@ -177,16 +177,17 @@ def validate_checkpoint(
 
     state_key = {"ema": "ema", "raw": "model"}[which_weights]
     if state_key not in payload:
-        raise KeyError(
-            f"checkpoint missing '{state_key}' state dict; keys={list(payload)}"
-        )
+        raise KeyError(f"checkpoint missing '{state_key}' state dict; keys={list(payload)}")
 
     if "stats" in payload:
         raw_stats = payload["stats"]
         stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))  # type: ignore[arg-type]
     else:
         cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
-        stats = load_stats_cache(cache_file)
+        cached = load_stats_cache(cache_file)
+        if cached is None:
+            raise RuntimeError(f"stats cache has no matching fingerprint: {cache_file}")
+        stats = cached
         logger.info("loaded stats from cache file %s", cache_file)
 
     model = RotationModel(
@@ -238,8 +239,7 @@ def validate_checkpoint(
     )
     dt = time.monotonic() - t0
     logger.info(
-        "checkpoint %s -> group_ce=%.4f group4_acc=%.4f "
-        "mean_margin_ok=%.4f mean_margin_bad=%.4f group4_n=%d in %.0fs",
+        "checkpoint %s -> group_ce=%.4f group4_acc=%.4f mean_margin_ok=%.4f mean_margin_bad=%.4f group4_n=%d in %.0fs",
         checkpoint_path.name,
         loss,
         group4_acc,

@@ -38,5 +38,4 @@ def open_rgb(
     img = Image.open(path)
     if preview_size is not None:
         img.draft("RGB", preview_size)
-    img = ImageOps.exif_transpose(img)
-    return img.convert("RGB")
+    return ImageOps.exif_transpose(img).convert("RGB")

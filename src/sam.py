@@ -84,8 +84,7 @@ class SAM(torch.optim.Optimizer):
 
     def step(self, closure=None):  # noqa: ARG002 - SAM uses explicit two-step API
         raise RuntimeError(
-            "SAM has no single-call step(); use first_step() and second_step() "
-            "around two forward/backward passes."
+            "SAM has no single-call step(); use first_step() and second_step() around two forward/backward passes."
         )
 
     def load_state_dict(self, state_dict) -> None:
@@ -98,7 +97,7 @@ def disable_running_stats(model: torch.nn.Module) -> None:
     for module in model.modules():
         if hasattr(module, "running_mean") and getattr(module, "momentum", None) is not None:
             module.backup_momentum = module.momentum
-            module.momentum = 0.0
+            module.momentum = 0.0  # type: ignore[assignment]
 
 
 def enable_running_stats(model: torch.nn.Module) -> None:

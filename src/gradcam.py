@@ -46,7 +46,10 @@ def load_model(
         stats = NormStats(mean=tuple(raw_stats["mean"]), std=tuple(raw_stats["std"]))  # type: ignore[arg-type]
     else:
         cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
-        stats = load_stats_cache(cache_file)
+        cached = load_stats_cache(cache_file)
+        if cached is None:
+            raise RuntimeError(f"stats cache has no matching fingerprint: {cache_file}")
+        stats = cached
     model = RotationModel(pooling=payload.get("pooling", "avg"))
     model.load_state_dict(payload["ema"])
     model.to(device)
@@ -74,22 +77,22 @@ def compute_gradcam_batch(
     fh = target_layer.register_forward_hook(fwd)
     bh = target_layer.register_full_backward_hook(bwd)  # type: ignore[arg-type]
 
-    output = model(tensor)                 # (B,) or (B, 1)
+    output = model(tensor)  # (B,) or (B, 1)
     model.zero_grad()
-    output.sum().backward()                # per-sample grads are independent
+    output.sum().backward()  # per-sample grads are independent
 
     fh.remove()
     bh.remove()
 
-    feat = saved_features[0]               # (B, C, H, W)
-    grad = saved_grads[0]                  # (B, C, H, W)
+    feat = saved_features[0]  # (B, C, H, W)
+    grad = saved_grads[0]  # (B, C, H, W)
     weights = grad.mean(dim=(2, 3), keepdim=True)
-    cam = nn.functional.relu((weights * feat).sum(dim=1))   # (B, H, W)
+    cam = nn.functional.relu((weights * feat).sum(dim=1))  # (B, H, W)
     cam_max = cam.amax(dim=(1, 2), keepdim=True).clamp(min=1e-8)
-    cam = (cam / cam_max).cpu().detach().float().numpy()
+    cam_np = (cam / cam_max).cpu().detach().float().numpy()
 
     logits = output.detach().cpu().float().reshape(-1).tolist()
-    return [cam[i] for i in range(cam.shape[0])], logits
+    return [cam_np[i] for i in range(cam_np.shape[0])], logits
 
 
 def make_overlay(
@@ -100,13 +103,8 @@ def make_overlay(
 ) -> Image.Image:
     cam = np.sqrt(cam)  # spread activation - avoids tiny concentrated hot spots
     heatmap = mpl.colormaps[colormap](cam)[:, :, :3]
-    heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(
-        pil_img.size, Image.Resampling.BICUBIC
-    )
-    blended = (
-        np.array(pil_img, dtype=np.float32) * (1 - alpha)
-        + np.array(heatmap_pil, dtype=np.float32) * alpha
-    )
+    heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(pil_img.size, Image.Resampling.BICUBIC)
+    blended = np.array(pil_img, dtype=np.float32) * (1 - alpha) + np.array(heatmap_pil, dtype=np.float32) * alpha
     return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
 
 
@@ -128,6 +126,7 @@ def compute_guided_gradcam_batch(
     def make_fwd(idx: int):
         def fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
             silu_outputs[idx] = out
+
         return fwd
 
     def make_bwd(idx: int):
@@ -141,6 +140,7 @@ def compute_guided_gradcam_batch(
             new_grad[out <= 0] = 0
             new_grad[new_grad < 0] = 0
             return (new_grad,)
+
         return bwd
 
     silu_modules = [m for m in model.modules() if isinstance(m, nn.SiLU)]
@@ -162,16 +162,18 @@ def compute_guided_gradcam_batch(
         for sm, was_inplace in zip(silu_modules, original_inplace, strict=True):
             sm.inplace = was_inplace
 
-    grad = x.grad.abs().sum(dim=1)                  # type: ignore[union-attr]  # (B, H, W)
+    grad = x.grad.abs().sum(dim=1)  # type: ignore[union-attr]  # (B, H, W)
     grad_np = grad.cpu().detach().float().numpy()
 
     guided_out: list[np.ndarray] = []
     for i, cam in enumerate(cams):
         h_in, w_in = grad_np[i].shape
-        cam_up = np.array(
-            Image.fromarray((cam * 255).astype(np.uint8))
-            .resize((w_in, h_in), Image.Resampling.BICUBIC),
-        ).astype(np.float32) / 255.0
+        cam_up = (
+            np.array(
+                Image.fromarray((cam * 255).astype(np.uint8)).resize((w_in, h_in), Image.Resampling.BICUBIC),
+            ).astype(np.float32)
+            / 255.0
+        )
 
         guided = grad_np[i] * cam_up
         p99 = float(np.percentile(guided, 99))
@@ -195,9 +197,7 @@ def visualise_grid(
     fig = Figure(figsize=(10, 10))
     axes = fig.subplots(2, 2)
 
-    for idx, (angle, heat, prob, disp) in enumerate(
-        zip(constants.ROTATIONS, heatmaps, probs, displays, strict=True)
-    ):
+    for idx, (angle, heat, prob, disp) in enumerate(zip(constants.ROTATIONS, heatmaps, probs, displays, strict=True)):
         img_overlay = make_overlay(disp, heat, colormap=colormap)
         ax = axes[idx // 2, idx % 2]
         marker = " *" if idx == pred else ""
@@ -224,10 +224,12 @@ def compute_rotations(
     device: torch.device,
 ) -> tuple[list[Image.Image], list[float], list[np.ndarray], torch.Tensor]:
     # Display images: resize + center-crop, then PIL-rotate each view.
-    crop = T.Compose([
-        T.Resize(constants.RESIZE_SIZE),
-        T.CenterCrop(constants.INPUT_SIZE),
-    ])(pil_img)
+    crop = T.Compose(
+        [
+            T.Resize(constants.RESIZE_SIZE),
+            T.CenterCrop(constants.INPUT_SIZE),
+        ]
+    )(pil_img)
     displays = [crop.rotate(a) if a != 0 else crop for a in constants.ROTATIONS]
 
     # Model input: transform once (resize/crop/to_tensor/normalize), then
@@ -265,12 +267,14 @@ def main(args) -> None:
     device = torch.device(args.device)
     model, stats = load_model(args.checkpoint, device)
 
-    preprocess = T.Compose([
-        T.Resize(constants.RESIZE_SIZE),
-        T.CenterCrop(constants.INPUT_SIZE),
-        T.ToTensor(),
-        T.Normalize(stats.mean, stats.std),
-    ])
+    preprocess = T.Compose(
+        [
+            T.Resize(constants.RESIZE_SIZE),
+            T.CenterCrop(constants.INPUT_SIZE),
+            T.ToTensor(),
+            T.Normalize(stats.mean, stats.std),
+        ]
+    )
 
     args.out_dir.mkdir(exist_ok=True)
 

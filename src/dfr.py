@@ -55,15 +55,10 @@ def load_checkpoint_model(
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_key = {"ema": "ema", "raw": "model"}[which_weights]
     if state_key not in payload:
-        raise KeyError(
-            f"checkpoint missing '{state_key}' state dict; keys={list(payload)}"
-        )
+        raise KeyError(f"checkpoint missing '{state_key}' state dict; keys={list(payload)}")
 
     if "stats" not in payload:
-        raise KeyError(
-            "checkpoint has no 'stats'; DFR needs the normalization the "
-            "backbone was trained with"
-        )
+        raise KeyError("checkpoint has no 'stats'; DFR needs the normalization the backbone was trained with")
     raw_stats = payload["stats"]
     stats = NormStats(
         mean=tuple(raw_stats["mean"]),  # type: ignore[arg-type]
@@ -77,7 +72,9 @@ def load_checkpoint_model(
     model.load_state_dict(payload[state_key])
     logger.info(
         "loaded %s (epoch=%s, weights=%s)",
-        checkpoint_path, payload.get("epoch"), which_weights,
+        checkpoint_path,
+        payload.get("epoch"),
+        which_weights,
     )
     return model, stats
 
@@ -100,7 +97,7 @@ def freeze_backbone(model: RotationModel, reinit_head: bool) -> None:
     if reinit_head:
         for module in model.head.modules():
             if hasattr(module, "reset_parameters"):
-                module.reset_parameters()
+                module.reset_parameters()  # type: ignore[operator]
         logger.info("reinitialised head for a fresh DFR fit")
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -252,7 +249,7 @@ def main(args) -> None:
         which_weights=args.weights,
         device=device,
     )
-    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
+    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
     freeze_backbone(model, reinit_head=not args.no_reinit_head)
 
     if args.data_root:
@@ -311,8 +308,7 @@ if __name__ == "__main__":
         type=Path,
         nargs="+",
         default=None,
-        help="one or more dirs of hard / in-domain images to refit the head on "
-        "(default: config.DATASETS train roots)",
+        help="one or more dirs of hard / in-domain images to refit the head on (default: config.DATASETS train roots)",
     )
     p.add_argument(
         "--output",

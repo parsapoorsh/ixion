@@ -45,6 +45,7 @@ class DatasetSpec:
     train split and caches the result. Set them explicitly to pin to fixed
     constants (e.g. ImageNet stats) and skip the scan.
     """
+
     name: str
     train: list[Path]
     val: list[Path]
@@ -92,9 +93,7 @@ def load_base_image(base: ImageLoader, img_idx: int) -> Image.Image:
     try:
         return base[img_idx]  # type: ignore[return-value]
     except (UnidentifiedImageError, OSError) as exc:
-        raise RuntimeError(
-            f"unreadable image {base.files[img_idx]}: {exc}"
-        ) from exc
+        raise RuntimeError(f"unreadable image {base.files[img_idx]}: {exc}") from exc
 
 
 class RotationPairDataset(Dataset):
@@ -175,11 +174,7 @@ def build_dataset(
     erasing_p: float = 0.25,
     crop_policy: str = "random",
 ) -> tuple[RotationPairDataset, NormStats]:
-    roots = [
-        root
-        for ds in datasets
-        for root in (ds.train if split == "train" else ds.val)
-    ]
+    roots = [root for ds in datasets for root in (ds.train if split == "train" else ds.val)]
     files = index_files(
         name=split,
         roots=roots,

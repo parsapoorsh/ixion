@@ -46,18 +46,22 @@ def build_train_transform(
     return T.Compose(transforms)
 
 
-eval_preprocess = T.Compose([
-    T.Resize(constants.RESIZE_SIZE),
-    T.CenterCrop(constants.INPUT_SIZE),
-    T.ToTensor(),
-])
+eval_preprocess = T.Compose(
+    [
+        T.Resize(constants.RESIZE_SIZE),
+        T.CenterCrop(constants.INPUT_SIZE),
+        T.ToTensor(),
+    ]
+)
 
 
 def build_eval_transform(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
 ) -> T.Compose:
-    return T.Compose([
-        *eval_preprocess.transforms,
-        T.Normalize(mean, std),
-    ])
+    return T.Compose(
+        [
+            *eval_preprocess.transforms,
+            T.Normalize(mean, std),
+        ]
+    )

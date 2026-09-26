@@ -24,7 +24,7 @@ import lzma
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -61,8 +61,8 @@ def index_files(
     cache = cache_dir / f"index_{name}.json.xz"
     fingerprint = cache_fingerprint(name, sorted(str(root) for root in roots))
     if cache.exists():
-        with lzma.open(cache, "rt") as f:
-            payload = json.load(f)
+        with lzma.open(cache, "rt") as fh:
+            payload = json.load(fh)
         if payload.get("fingerprint") == fingerprint:
             return PathList(payload["trie"])
         logger.info(
@@ -87,8 +87,8 @@ def index_files(
     dt = time.monotonic() - t0
     logger.info("scanned %s: %d files in %.1fs", name, count, dt)
 
-    with lzma.open(cache, "wt") as f:
-        json.dump({"fingerprint": fingerprint, "trie": trie}, f)
+    with lzma.open(cache, "wt") as fh:
+        json.dump({"fingerprint": fingerprint, "trie": trie}, fh)
     return PathList(trie)
 
 
@@ -142,7 +142,15 @@ class PathList(Sequence[Path]):
     def __len__(self) -> int:
         return self.length
 
-    def __getitem__(self, idx: int) -> Path:
+    @overload
+    def __getitem__(self, idx: int) -> Path: ...
+
+    @overload
+    def __getitem__(self, idx: slice) -> list[Path]: ...
+
+    def __getitem__(self, idx: int | slice) -> Path | list[Path]:
+        if isinstance(idx, slice):
+            return [self[i] for i in range(*idx.indices(self.length))]
         if idx < 0:
             idx += self.length
         if idx < 0 or idx >= self.length:

@@ -20,6 +20,7 @@ import sys
 import sysconfig
 import time
 from pathlib import Path
+from typing import cast
 
 import torch
 from torch import nn
@@ -91,11 +92,7 @@ def save_checkpoint(
         "ema_step": ema.step,
         "optimizer": base_optimizer.state_dict(),
         "rng_cpu": torch.get_rng_state(),
-        "rng_cuda": (
-            torch.cuda.get_rng_state_all()
-            if torch.cuda.is_available()
-            else None
-        ),
+        "rng_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
     }
     if extras:
         payload.update(extras)
@@ -187,7 +184,7 @@ def setup_model(
         drop_path_rate=drop_path_rate,
         pooling=resume_pooling,
     ).to(device)
-    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
+    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
     ema = ModelEMA(
         model,
         decay=ema_decay,
@@ -220,6 +217,7 @@ def setup_model(
     schedule_total_steps = None
     schedule_warmup_steps = None
     if resume_from is not None:
+        assert resume_payload is not None
         payload = resume_payload
         model.load_state_dict(payload["model"])
 
@@ -238,9 +236,7 @@ def setup_model(
         if payload.get("rng_cuda") is not None and torch.cuda.is_available():
             # map_location=device pulls the saved ByteTensors to CUDA, but
             # set_rng_state_all requires CPU ByteTensors - move them back.
-            torch.cuda.set_rng_state_all(
-                [s.cpu().to(torch.uint8) for s in payload["rng_cuda"]]
-            )
+            torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in payload["rng_cuda"]])
 
         start_epoch = int(payload["epoch"]) + 1
         if "schedule_total_steps" in payload:
@@ -259,7 +255,7 @@ def setup_model(
     if compile_model:
         can_compile, reason = can_compile_model(device)
         if can_compile:
-            model = torch.compile(model)
+            model = cast(RotationModel, torch.compile(model))
             logger.info("enabled torch.compile")
         else:
             logger.warning("disabled torch.compile: %s", reason)
@@ -329,17 +325,9 @@ def train(
     )
 
     requested_total_steps = steps_per_epoch * epochs
-    total_steps = (
-        saved_schedule_total_steps
-        if saved_schedule_total_steps is not None
-        else requested_total_steps
-    )
+    total_steps = saved_schedule_total_steps if saved_schedule_total_steps is not None else requested_total_steps
     requested_warmup_steps = steps_per_epoch * warmup_epochs
-    warmup_steps = (
-        saved_schedule_warmup_steps
-        if saved_schedule_warmup_steps is not None
-        else requested_warmup_steps
-    )
+    warmup_steps = saved_schedule_warmup_steps if saved_schedule_warmup_steps is not None else requested_warmup_steps
     logger.info(
         "%d epochs x %d steps, schedule total %d (warmup %d steps)",
         epochs,
@@ -450,8 +438,13 @@ def train(
                 )
                 logger.info(
                     "epoch %d step %d/%d loss=%.5f acc=%.5f lr=%.2e grad_norm=%.5f",
-                    epoch, global_step, total_steps,
-                    window_loss, window_acc, lr_now, window_gn,
+                    epoch,
+                    global_step,
+                    total_steps,
+                    window_loss,
+                    window_acc,
+                    lr_now,
+                    window_gn,
                 )
             global_step += 1
 
@@ -637,8 +630,7 @@ if __name__ == "__main__":
         "--resume",
         type=Path,
         default=None,
-        help="path to an epoch_NNN.pt checkpoint to resume from "
-             "(model, EMA, optimizer, and saved schedule restored)",
+        help="path to an epoch_NNN.pt checkpoint to resume from (model, EMA, optimizer, and saved schedule restored)",
     )
     args = p.parse_args()
 

@@ -31,4 +31,3 @@ RESIZE_SIZE = 232
 # stats cache fingerprint, so changing them needs --invalidate-cache.
 STATS_SAMPLE_FRACTION = 0.05
 STATS_SAMPLE_SEED = 0
-

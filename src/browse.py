@@ -31,14 +31,18 @@ from models import RotationModel
 from stats import NormStats, load_stats_cache
 from utils.image_io import open_rgb
 
-IMAGE_EXTS = frozenset({
-    ".jpg", ".jpeg",
-    ".png",
-    ".webp",
-    ".bmp",
-    ".tiff", ".tif",
-    ".jxl",
-})
+IMAGE_EXTS = frozenset(
+    {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".jxl",
+    }
+)
 PREFETCH_SIZE = 10
 _DONE = object()  # sentinel pushed by worker when exhausted
 
@@ -46,6 +50,7 @@ _DONE = object()  # sentinel pushed by worker when exhausted
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class InferResult:
@@ -62,6 +67,7 @@ class InferResult:
 # Model loading
 # ---------------------------------------------------------------------------
 
+
 def load_model(
     checkpoint: Path,
     device: torch.device,
@@ -71,18 +77,19 @@ def load_model(
 
     state_key = {"ema": "ema", "raw": "model"}[weights]
     if state_key not in payload:
-        raise KeyError(
-            f"checkpoint missing '{state_key}' key; available={list(payload)}"
-        )
+        raise KeyError(f"checkpoint missing '{state_key}' key; available={list(payload)}")
 
     raw_stats = payload.get("stats")
     if raw_stats:
         stats = NormStats(
             mean=tuple(raw_stats["mean"]),  # type: ignore[arg-type]
-            std=tuple(raw_stats["std"]),    # type: ignore[arg-type]
+            std=tuple(raw_stats["std"]),  # type: ignore[arg-type]
         )
     else:
-        stats = load_stats_cache(INDEX_CACHE_DIR / "stats_train.json")
+        cached = load_stats_cache(INDEX_CACHE_DIR / "stats_train.json")
+        if cached is None:
+            raise RuntimeError("stats cache has no matching fingerprint")
+        stats = cached
 
     model = RotationModel(
         pretrained=False,
@@ -97,16 +104,15 @@ def load_model(
 # Directory scan
 # ---------------------------------------------------------------------------
 
+
 def scan_images(root: Path) -> list[Path]:
-    return sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-    )
+    return sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
 
 
 # ---------------------------------------------------------------------------
 # Background prefetch worker
 # ---------------------------------------------------------------------------
+
 
 def prefetch_worker(
     paths: list[Path],
@@ -131,10 +137,7 @@ def prefetch_worker(
                 std=stats.std,
             )
             best_deg = vote.best_deg
-            abstained = (
-                abstain_margin is not None
-                and vote.should_abstain(abstain_margin)
-            )
+            abstained = abstain_margin is not None and vote.should_abstain(abstain_margin)
             # Low margin: keep original (no auto-rotate).
             if abstained:
                 corrected = original
@@ -175,24 +178,19 @@ def prefetch_worker(
 # Display (blocking tkinter window)
 # ---------------------------------------------------------------------------
 
+
 def show_result(result: InferResult, index: int, total: int) -> None:
     """Open a blocking tkinter window for *result*; returns when it is closed."""
     import tkinter as tk
 
     from PIL import ImageTk
 
-    prob_str = "  ".join(
-        f"{deg}°: {prob:.3f}" for deg, prob in sorted(result.vote.normalized_probs.items())
-    )
+    prob_str = "  ".join(f"{deg}°: {prob:.3f}" for deg, prob in sorted(result.vote.normalized_probs.items()))
     if result.abstained:
         decision = f"ABSTAIN (margin={result.vote.margin:.3f})"
     else:
         decision = f"correction: {result.best_deg}° (margin={result.vote.margin:.3f})"
-    title = (
-        f"[{index}/{total}]  {result.path.name}"
-        f"  ->  {decision}"
-        f"  |  {prob_str}"
-    )
+    title = f"[{index}/{total}]  {result.path.name}  ->  {decision}  |  {prob_str}"
 
     root = tk.Tk()
     root.title(title)
@@ -200,7 +198,7 @@ def show_result(result: InferResult, index: int, total: int) -> None:
     root.bind("<q>", lambda _e: root.destroy())
 
     img = result.corrected.copy()
-    img.thumbnail((1280, 900), Image.LANCZOS)
+    img.thumbnail((1280, 900), Image.Resampling.LANCZOS)
 
     photo = ImageTk.PhotoImage(img)
     img_label = tk.Label(root, image=photo, bg="black")
@@ -232,6 +230,7 @@ def show_result(result: InferResult, index: int, total: int) -> None:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
@@ -282,8 +281,7 @@ def main(args: argparse.Namespace) -> None:
         if not item.error and best_norm >= args.conf_threshold:
             skipped += 1
             tqdm.write(
-                f"[{processed}/{len(paths)}]  {item.path.name}"
-                f"  skipped (conf={best_norm:.3f} >= {args.conf_threshold})"
+                f"[{processed}/{len(paths)}]  {item.path.name}  skipped (conf={best_norm:.3f} >= {args.conf_threshold})"
             )
             continue
 

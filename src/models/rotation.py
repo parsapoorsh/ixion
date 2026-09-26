@@ -8,6 +8,8 @@ before LayerNorm -> Dropout -> Linear.
 
 from __future__ import annotations
 
+from typing import cast
+
 import timm
 import torch
 from torch import nn
@@ -47,7 +49,7 @@ class RotationModel(nn.Module):
             global_pool="",
             drop_path_rate=drop_path_rate,
         )
-        feat_dim: int = self.backbone.num_features  # 1280 # pyright: ignore[reportAssignmentType]
+        feat_dim = cast(int, self.backbone.num_features)  # 1280
         if pooling == "attention":
             self.pool: nn.Module = SpatialAttentionPool(feat_dim)
         elif pooling == "avg":

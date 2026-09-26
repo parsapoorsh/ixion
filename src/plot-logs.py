@@ -74,9 +74,7 @@ def parse_log(path: Path, epoch: int | None = None) -> list[Record]:
                     m = LINE_RE.search(line)
                     if m:
                         available.add(int(m.group(1)))
-            raise SystemExit(
-                f"No data for epoch {epoch}. Available epochs: {sorted(available)}"
-            )
+            raise SystemExit(f"No data for epoch {epoch}. Available epochs: {sorted(available)}")
         raise SystemExit(f"No matching log lines found in {path}")
     return records
 
@@ -92,11 +90,7 @@ def plot(
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
     axes = axes.ravel()
 
-    title = (
-        f"Training metrics - epoch {epoch}"
-        if epoch is not None
-        else "Training metrics - all epochs"
-    )
+    title = f"Training metrics - epoch {epoch}" if epoch is not None else "Training metrics - all epochs"
     fig.suptitle(title, fontsize=14)
 
     for ax, metric in zip(axes, METRICS, strict=True):
@@ -127,9 +121,7 @@ def plot(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Plot training metrics from log file."
-    )
+    parser = argparse.ArgumentParser(description="Plot training metrics from log file.")
     parser.add_argument(
         "logfile",
         type=Path,
