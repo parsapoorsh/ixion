@@ -118,18 +118,19 @@ def make_focus_scale(ceiling, spread_top):
     """Build a (forward, inverse) pair that zooms the y axis into one end."""
     p = 2
 
+    def abc(a, b):
+        if spread_top:
+            a = 1.0 - a
+        c = np.power(a, b)
+        return (1.0 - c) if spread_top else c
+
     def forward(values):
         step = np.clip(np.asarray(values, dtype=float) / ceiling, 0.0, 1.0)
-        if spread_top:
-            return 1.0 - np.power(1.0 - step, 1.0 / p)
-        return np.power(step, 1.0 / p)
+        return abc(step, 1.0 / p)
 
     def inverse(steps):
         step = np.clip(np.asarray(steps, dtype=float), 0.0, 1.0)
-        if spread_top:
-            step = 1.0 - np.power(1.0 - step, p)
-        else:
-            step = np.power(step, p)
+        step = abc(step, p)
         return step * ceiling
 
     return forward, inverse
