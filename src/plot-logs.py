@@ -30,6 +30,13 @@ LINE_RE = re.compile(
 
 METRICS = ("loss", "acc", "lr", "grad_norm")
 
+# How hard to zoom the y axis of acc and loss onto the band those metrics
+# actually live in. acc crowds its values just under 1.0 and loss crowds them
+# just above 0.0, so the axis gives that end most of the room and squeezes the
+# other end. 1.0 is a plain linear axis; bigger numbers zoom in harder, e.g.
+# 2 is mild, 3 is what the panels below use, 5 is aggressive.
+FOCUS = 3.0
+
 
 @dataclass(frozen=True)
 class Record:
@@ -103,24 +110,38 @@ def smooth_trend(y: np.ndarray, window: int) -> np.ndarray:
     return (cs[window:] - cs[:-window]) / window
 
 
-def log_complement_forward(v):
-    """Map fraction v (0..1) to -log2(1 - v), stretching values near 1."""
-    v = np.asarray(v, dtype=float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return -np.log2(1.0 - np.minimum(v, 1.0 - 1e-3))
+def make_focus_scale(ceiling, focus, spread_top):
+    """Build a (forward, inverse) pair that zooms the y axis into one end.
 
+    ``ceiling`` is the top of the axis in data units (the bottom is 0).
+    ``focus`` is 1 for an even, linear axis and grows towards that end the
+    more you raise it. ``spread_top`` picks which end gets the extra room:
+    True spreads values near ``ceiling`` (acc), False values near 0 (loss).
 
-def log_complement_inverse(u):
-    """Inverse of log_complement_forward: u -> 1 - 2**-u."""
-    return 1.0 - np.power(2.0, -np.asarray(u, dtype=float))
+    Both directions stay inside [0, ceiling], so unlike ``-log2(1 - v)`` this
+    never runs off to infinity at the crowded end.
+    """
+    power = 1.0 / focus
+
+    def forward(values):
+        step = np.clip(np.asarray(values, dtype=float) / ceiling, 0.0, 1.0)
+        if spread_top:
+            return 1.0 - np.power(1.0 - step, power)
+        return np.power(step, power)
+
+    def inverse(steps):
+        step = np.clip(np.asarray(steps, dtype=float), 0.0, 1.0)
+        if spread_top:
+            step = 1.0 - np.power(1.0 - step, focus)
+        else:
+            step = np.power(step, focus)
+        return step * ceiling
+
+    return forward, inverse
 
 
 def log_forward(v):
-    """Map v > 0 to log2(v), stretching values near 0.
-
-    Mirror of ``log_complement_forward``: that one spreads values near 1,
-    this one spreads values near 0.
-    """
+    """Map v > 0 to log2(v), stretching values near 0."""
     v = np.asarray(v, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.log2(np.maximum(v, 1e-6))
@@ -172,35 +193,25 @@ def plot(
         ax.grid(True, alpha=0.3)
         if metric == "lr":
             ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
-        elif metric in ("acc",):
-            # acc clusters near the top of [0, 1]; -log2(1 - v) stretches that
-            # upper band so it spreads out. Auto-limits collapse on a function
-            # scale, so pin the limits to the data with a small display-space
-            # margin (otherwise the top of the axis balloons into empty space).
+        else:
+            # Zoom into the crowded end: acc piles up near its max, loss near
+            # zero, and a linear axis would waste most of its height on the
+            # empty end (see FOCUS). The axis spans exactly this run's own
+            # range - the peak sits on the top line rather than in a margin -
+            # and the transform is built around that range, because auto-limits
+            # collapse on a function scale.
+            forward, inverse = make_focus_scale(
+                float(y.max()),
+                FOCUS,
+                metric == "acc",
+            )
             ax.set_yscale(
                 "function",
-                functions=(log_complement_forward, log_complement_inverse),
+                functions=(forward, inverse),
             )
-            low = float(log_complement_forward(y.min()))
-            high = float(log_complement_forward(y.max()))
-            pad = 0.05 * (high - low)
             ax.set_ylim(
-                float(log_complement_inverse(low - pad)),
-                float(log_complement_inverse(high + pad)),
-            )
-        elif metric in ("loss", "grad_norm"):
-            # Mirror of the acc stretch: log2(v) spreads values near 0 and
-            # squashes values near 1. Same limit handling as acc.
-            ax.set_yscale(
-                "function",
-                functions=(log_forward, log_inverse),
-            )
-            low = float(log_forward(y.min()))
-            high = float(log_forward(y.max()))
-            pad = 0.05 * (high - low)
-            ax.set_ylim(
-                float(log_inverse(low - pad)),
-                float(log_inverse(high + pad)),
+                float(y.min()),
+                float(y.max()),
             )
 
     axes[0].legend(loc="upper right", fontsize=8)
