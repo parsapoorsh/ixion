@@ -32,14 +32,6 @@ LINE_RE = re.compile(
 
 METRICS = ("loss", "acc", "lr", "grad_norm")
 
-# How hard to zoom the y axis of acc and loss onto the band those metrics
-# actually live in. acc crowds its values just under 1.0 and loss crowds them
-# just above 0.0, so the axis gives that end most of the room and squeezes the
-# other end. 1.0 is a plain linear axis; bigger numbers zoom in harder, e.g.
-# 2 is mild, 3 is what the panels below use, 5 is aggressive.
-FOCUS = 3.0
-
-
 @dataclass(frozen=True)
 class Record:
     epoch: int
@@ -122,31 +114,22 @@ def smooth_trend(y: np.ndarray, window: int) -> np.ndarray:
     return (cs[window:] - cs[:-window]) / window
 
 
-def make_focus_scale(ceiling, focus, spread_top):
-    """Build a (forward, inverse) pair that zooms the y axis into one end.
-
-    ``ceiling`` is the top of the axis in data units (the bottom is 0).
-    ``focus`` is 1 for an even, linear axis and grows towards that end the
-    more you raise it. ``spread_top`` picks which end gets the extra room:
-    True spreads values near ``ceiling`` (acc), False values near 0 (loss).
-
-    Both directions stay inside [0, ceiling], so unlike ``-log2(1 - v)`` this
-    never runs off to infinity at the crowded end.
-    """
-    power = 1.0 / focus
+def make_focus_scale(ceiling, spread_top):
+    """Build a (forward, inverse) pair that zooms the y axis into one end."""
+    p = 2
 
     def forward(values):
         step = np.clip(np.asarray(values, dtype=float) / ceiling, 0.0, 1.0)
         if spread_top:
-            return 1.0 - np.power(1.0 - step, power)
-        return np.power(step, power)
+            return 1.0 - np.power(1.0 - step, 1.0 / p)
+        return np.power(step, 1.0 / p)
 
     def inverse(steps):
         step = np.clip(np.asarray(steps, dtype=float), 0.0, 1.0)
         if spread_top:
-            step = 1.0 - np.power(1.0 - step, focus)
+            step = 1.0 - np.power(1.0 - step, p)
         else:
-            step = np.power(step, focus)
+            step = np.power(step, p)
         return step * ceiling
 
     return forward, inverse
@@ -214,7 +197,6 @@ def draw_axes(
             # collapse on a function scale.
             forward, inverse = make_focus_scale(
                 float(y.max()),
-                FOCUS,
                 metric == "acc",
             )
             ax.set_yscale(
