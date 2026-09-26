@@ -6,12 +6,14 @@ Usage:
   python plot-logs.py train.log
   python plot-logs.py train.log --epoch 0
   python plot-logs.py train.log -e 0 --save metrics.png
+  python plot-logs.py train.log --watch
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,8 +51,16 @@ class Record:
     grad_norm: float
 
 
-def parse_log(path: Path, epoch: int | None = None) -> list[Record]:
-    """Return list of Records, optionally filtered to a single epoch."""
+def parse_log(
+    path: Path,
+    epoch: int | None = None,
+    allow_empty: bool = False,
+) -> list[Record]:
+    """Return list of Records, optionally filtered to a single epoch.
+
+    With ``allow_empty`` an unparseable (or not-yet-populated) log returns an
+    empty list instead of exiting, which lets a watch loop keep polling.
+    """
     records: list[Record] = []
     with path.open() as f:
         for line in f:
@@ -73,6 +83,8 @@ def parse_log(path: Path, epoch: int | None = None) -> list[Record]:
                 )
             )
     if not records:
+        if allow_empty:
+            return records
         if epoch is not None:
             # Re-scan for available epochs so the error message is helpful
             available: set[int] = set()
@@ -152,16 +164,16 @@ def log_inverse(u):
     return np.power(2.0, np.asarray(u, dtype=float))
 
 
-def plot(
+def draw_axes(
+    fig: plt.Figure,
+    axes: np.ndarray,
     records: list[Record],
     epoch: int | None,
-    save_path: Path | None = None,
-    show: bool = True,
     trend_window: int = 0,
 ) -> None:
+    """Draw all panels into ``axes`` so a watch loop can redraw in place."""
     x = np.arange(len(records))  # always continuous
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
     axes = axes.ravel()
 
     title = f"Training metrics - epoch {epoch}" if epoch is not None else "Training metrics - all epochs"
@@ -225,6 +237,17 @@ def plot(
                 ax.axvline(c, color="gray", linestyle="--", alpha=0.5, linewidth=0.8)
 
     fig.tight_layout()
+
+
+def plot(
+    records: list[Record],
+    epoch: int | None,
+    save_path: Path | None = None,
+    show: bool = True,
+    trend_window: int = 0,
+) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+    draw_axes(fig, axes, records, epoch, trend_window)
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Saved figure to {save_path}")
@@ -232,6 +255,64 @@ def plot(
         plt.show()
     else:
         plt.close(fig)
+
+
+def watch_log(
+    path: Path,
+    epoch: int | None,
+    save_path: Path | None,
+    show: bool,
+    trend_window: int,
+    interval: float,
+) -> None:
+    """Re-read ``path`` on change and redraw; exits on KeyboardInterrupt.
+
+    Change is detected by mtime (nanosecond) and size, so the plot follows a
+    log that is still being written by a running training job.
+    """
+    if show:
+        plt.ion()
+    fig: plt.Figure | None = None
+    axes: np.ndarray | None = None
+    last_mtime: int | None = None
+    last_size: int | None = None
+    while True:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            time.sleep(interval)
+            continue
+        changed = (
+            last_mtime is None
+            or stat.st_mtime_ns != last_mtime
+            or stat.st_size != last_size
+        )
+        if changed:
+            last_mtime = stat.st_mtime_ns
+            last_size = stat.st_size
+            records = parse_log(path, epoch=epoch, allow_empty=True)
+            if not records:
+                # Nothing parseable yet (or after the log was truncated); keep
+                # waiting for the first batch of step lines.
+                if show:
+                    plt.pause(interval)
+                else:
+                    time.sleep(interval)
+                continue
+            if fig is None:
+                fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+            assert axes is not None
+            for ax in axes.ravel():
+                ax.clear()
+            draw_axes(fig, axes, records, epoch, trend_window)
+            fig.canvas.draw_idle()
+            if save_path:
+                fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                print(f"Saved figure to {save_path}")
+        if show:
+            plt.pause(interval)
+        else:
+            time.sleep(interval)
 
 
 def main() -> None:
@@ -266,10 +347,35 @@ def main() -> None:
         default=0,
         help="rolling-mean window for the trend overlay (0 = auto, ~2.5%% of points)",
     )
+    parser.add_argument(
+        "-w",
+        "--watch",
+        action="store_true",
+        help="keep re-reading the log and redrawing the plot as it grows",
+    )
+    parser.add_argument(
+        "--watch-interval",
+        type=float,
+        default=2.0,
+        help="seconds between re-reads in --watch mode",
+    )
     args = parser.parse_args()
 
-    if not args.logfile.is_file():
+    # Watch mode tolerates a log that doesn't exist yet (e.g. training starts
+    # after the watcher); a one-shot run still requires an existing file.
+    if not args.watch and not args.logfile.is_file():
         raise SystemExit(f"File not found: {args.logfile}")
+
+    if args.watch:
+        watch_log(
+            args.logfile,
+            epoch=args.epoch,
+            save_path=args.save,
+            show=not args.no_show,
+            trend_window=args.trend_window,
+            interval=args.watch_interval,
+        )
+        return
 
     records = parse_log(args.logfile, epoch=args.epoch)
 
