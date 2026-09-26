@@ -286,7 +286,7 @@ def train(
     drop_path_rate: float = 0.1,
     pooling: str = "avg",
     warmup_epochs: int = 5,
-    grad_clip: float = 1.0,
+    grad_clip: float = 20.0,
     ema_horizon_epochs: float = 0.4,
     use_sam: bool = False,
     sam_rho: float = 0.05,
@@ -591,8 +591,8 @@ if __name__ == "__main__":
     p.add_argument(
         "--grad-clip",
         type=float,
-        default=1.0,
-        help="max total gradient norm before clipping",
+        default=20.0,
+        help="max total gradient norm before clipping (safety net for spikes; typical norm is ~6-16)",
     )
     p.add_argument(
         "--erasing-p",
