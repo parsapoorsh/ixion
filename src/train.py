@@ -285,7 +285,7 @@ def train(
     drop_rate: float = 0.2,
     drop_path_rate: float = 0.1,
     pooling: str = "avg",
-    warmup_epochs: int = 5,
+    warmup_epochs: float = 5,
     grad_clip: float = 20.0,
     ema_horizon_epochs: float = 0.4,
     use_sam: bool = False,
@@ -326,7 +326,7 @@ def train(
 
     requested_total_steps = steps_per_epoch * epochs
     total_steps = saved_schedule_total_steps if saved_schedule_total_steps is not None else requested_total_steps
-    requested_warmup_steps = steps_per_epoch * warmup_epochs
+    requested_warmup_steps = int(steps_per_epoch * warmup_epochs)
     warmup_steps = saved_schedule_warmup_steps if saved_schedule_warmup_steps is not None else requested_warmup_steps
     logger.info(
         "%d epochs x %d steps, schedule total %d (warmup %d steps)",
@@ -517,10 +517,12 @@ def main(args) -> None:
         checkpoint_dir=constants.CHECKPOINT_DIR,
         stats=stats,
         epochs=args.epochs,
+        lr=args.lr,
         weight_decay=args.weight_decay,
         drop_rate=args.dropout,
         drop_path_rate=args.drop_path,
         pooling=args.pooling,
+        warmup_epochs=args.warmup_epochs,
         grad_clip=args.grad_clip,
         use_sam=args.sam,
         sam_rho=args.sam_rho,
@@ -569,6 +571,18 @@ if __name__ == "__main__":
         type=int,
         default=30,
         help="total number of training epochs",
+    )
+    p.add_argument(
+        "--lr",
+        type=float,
+        default=3e-4,
+        help="peak learning rate (after warmup, before cosine decay)",
+    )
+    p.add_argument(
+        "--warmup-epochs",
+        type=float,
+        default=5,
+        help="linear LR warmup length in epochs (fractions allowed)",
     )
     p.add_argument(
         "--weight-decay",
