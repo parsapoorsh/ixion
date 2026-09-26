@@ -79,11 +79,37 @@ def parse_log(path: Path, epoch: int | None = None) -> list[Record]:
     return records
 
 
+def smooth_trend(y: np.ndarray, window: int) -> np.ndarray:
+    """Centered rolling mean for a smooth trend overlay.
+
+    A linear fit would ignore the curved shape of loss/acc/grad_norm; a
+    rolling mean follows the actual trend. The window is forced odd so the
+    mean stays centered on each sample, and edges are replicated so the
+    trend spans the full range.
+    """
+    n = y.size
+    if n < 3:
+        return y.astype(float).copy()
+    window = min(window, n)
+    if window < 3:
+        window = min(3, n)
+    if window % 2 == 0:
+        window -= 1
+    if window < 3:
+        return y.astype(float).copy()
+    half = window // 2
+    padded = np.pad(y, (half, half), mode="edge")
+    cs = np.cumsum(np.insert(padded, 0, 0.0))
+    return (cs[window:] - cs[:-window]) / window
+
+
 def plot(
     records: list[Record],
     epoch: int | None,
     save_path: Path | None = None,
     show: bool = True,
+    trend_window: int = 0,
+    show_trend: bool = True,
 ) -> None:
     x = np.arange(len(records))  # always continuous
 
@@ -93,14 +119,33 @@ def plot(
     title = f"Training metrics - epoch {epoch}" if epoch is not None else "Training metrics - all epochs"
     fig.suptitle(title, fontsize=14)
 
+    auto_window = max(15, (len(records) // 40) | 1)
+    window = trend_window if trend_window > 0 else auto_window
+
     for ax, metric in zip(axes, METRICS, strict=True):
         y = np.array([getattr(r, metric) for r in records])
-        ax.plot(x, y, linewidth=1.2)
+        ax.plot(
+            x,
+            y,
+            color="C0",
+            linewidth=1.0,
+            label="raw",
+        )
+        if show_trend:
+            ax.plot(
+                x,
+                smooth_trend(y, window),
+                color="C1",
+                linewidth=2.0,
+                label="trend",
+            )
         ax.set_title(metric)
         ax.set_xlabel("step")
         ax.grid(True, alpha=0.3)
         if metric == "lr":
             ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+
+    axes[0].legend(loc="upper right", fontsize=8)
 
     # Mark epoch boundaries when showing all epochs
     if epoch is None and len(records) > 1:
@@ -146,6 +191,17 @@ def main() -> None:
         action="store_true",
         help="Do not open an interactive window (useful with --save)",
     )
+    parser.add_argument(
+        "--trend-window",
+        type=int,
+        default=0,
+        help="rolling-mean window for the trend overlay (0 = auto, ~2.5%% of points)",
+    )
+    parser.add_argument(
+        "--no-trend",
+        action="store_true",
+        help="disable the smoothed trend overlay",
+    )
     args = parser.parse_args()
 
     if not args.logfile.is_file():
@@ -158,6 +214,8 @@ def main() -> None:
         epoch=args.epoch,
         save_path=args.save,
         show=not args.no_show,
+        trend_window=args.trend_window,
+        show_trend=not args.no_trend,
     )
 
 
