@@ -27,28 +27,37 @@ def build_datasets(root: Path) -> list[DatasetSpec]:
           coco/{train2017,test2017,val2017}/
     """
     root = Path(root)
-    return [
-        DatasetSpec(
+    result = []
+
+    imagenet_path = root / "ILSVRC2017"
+    if imagenet_path.exists():
+        ds = DatasetSpec(
             name="imagenet",
             train=[
-                root / "ILSVRC2017/Data/CLS-LOC/train",
-                root / "ILSVRC2017/Data/CLS-LOC/test",
+                imagenet_path /"Data" / "CLS-LOC" / "train",
+                imagenet_path /"Data" / "CLS-LOC" / "test",
             ],
             val=[
-                root / "ILSVRC2017/Data/CLS-LOC/val",
+                imagenet_path /"Data" / "CLS-LOC" / "val",
             ],
-        ),
-        DatasetSpec(
+        )
+        result.appened(ds)
+
+    coco_path = root / "coco"
+    if coco_path.exists():
+        ds = DatasetSpec(
             name="coco",
             train=[
-                root / "coco/train2017",
-                root / "coco/test2017",
+                coco_path / "train2017",
+                coco_path / "test2017",
             ],
             val=[
-                root / "coco/val2017",
+                coco_path / "val2017",
             ],
-        ),
-    ]
+        )
+        result.appened(ds)
+
+    return result
 
 
 # Stats sampling constants live in constants.py (datasets.py needs them and
