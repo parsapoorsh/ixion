@@ -2,8 +2,8 @@
 """Single-phase training loop.
 
 Run from the project root:
-    venv/bin/python src/train.py --device cuda --batch-size N \\
-        --num-workers N --prefetch-factor N
+    venv/bin/python src/train.py --data-root /path/to/datasets \\
+        --device cuda --batch-size N --num-workers N --prefetch-factor N
 
 Each view is a binary upright/not example (BCEWithLogitsLoss). Four-way
 ranking is eval/infer only - see ``validator.py``.
@@ -562,9 +562,10 @@ def main(args) -> None:
         if args.pretrain
         else None
     )
+    datasets = config.build_datasets(args.data_root)
     ds, stats = build_dataset(
         split="train",
-        datasets=config.DATASETS,
+        datasets=datasets,
         device=device,
         num_workers=args.num_workers,
         batch_size=args.batch_size,
@@ -611,6 +612,15 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(
         description="Train the rotation detector.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument(
+        "--data-root",
+        type=Path,
+        required=True,
+        help=(
+            "root directory that contains the ImageNet 2017 and COCO 2017 "
+            "layout (see config.build_datasets)"
+        ),
     )
     p.add_argument(
         "--device",

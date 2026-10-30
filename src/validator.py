@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Standalone validation CLI for a single checkpoint.
 
-Loads a checkpoint, builds the val dataset from ``config.DATASETS``
+Loads a checkpoint, builds the val dataset from ``--data-root``
 at the model's preprocess sizes, and runs one validation pass. No
 autocast, no async machinery, no train-loop coupling - point it at
 any checkpoint with any device.
@@ -153,6 +153,7 @@ def run_validation(
 
 def validate_checkpoint(
     checkpoint_path: Path,
+    data_root: Path,
     device: torch.device,
     which_weights: str,
     batch_size: int,
@@ -198,7 +199,7 @@ def validate_checkpoint(
 
     val_ds, _ = build_dataset(
         split="val",
-        datasets=config.DATASETS,
+        datasets=config.build_datasets(data_root),
         device=device,
         num_workers=num_workers,
         batch_size=batch_size,
@@ -254,6 +255,7 @@ def main(args) -> None:
     setup_logging(constants.LOGS_DIR)
     validate_checkpoint(
         checkpoint_path=args.checkpoint,
+        data_root=args.data_root,
         device=torch.device(args.device),
         which_weights=args.weights,
         batch_size=args.batch_size,
@@ -265,13 +267,22 @@ def main(args) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(
-        description="Validate a single checkpoint against config.DATASETS.",
+        description="Validate a single checkpoint against the val split under --data-root.",
     )
     p.add_argument(
         "--checkpoint",
         type=Path,
         required=True,
         help="path to an epoch_NNN.pt checkpoint to validate",
+    )
+    p.add_argument(
+        "--data-root",
+        type=Path,
+        required=True,
+        help=(
+            "root directory that contains the ImageNet 2017 and COCO 2017 "
+            "layout (see config.build_datasets)"
+        ),
     )
     p.add_argument(
         "--device",

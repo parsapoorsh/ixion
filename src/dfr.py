@@ -9,10 +9,10 @@ the backbone, reinitialise the head, and retrain just the head on a small set
 balanced toward the hard / in-domain cases.
 
 This is a post-hoc edit of an existing checkpoint - no full retrain. Point
-``--data-root`` at in-domain images (e.g. a sample of the Immich library);
-without it, the script falls back to ``config.DATASETS``. The output is a new
-checkpoint in the same format ``validator.py`` expects (weights stored under
-both ``model`` and ``ema``), so you can validate it the usual way.
+``--data-root`` at in-domain images (e.g. a sample of the Immich library).
+The output is a new checkpoint in the same format ``validator.py`` expects
+(weights stored under both ``model`` and ``ema``), so you can validate it
+the usual way.
 
 Run from the project root:
     venv/bin/python src/dfr.py \\
@@ -34,7 +34,6 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-import config
 import constants
 from builders import build_train_transform
 from datasets import ImageLoader, RotationPairDataset
@@ -252,14 +251,8 @@ def main(args) -> None:
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
     freeze_backbone(model, reinit_head=not args.no_reinit_head)
 
-    if args.data_root:
-        data_roots = list(args.data_root)
-    else:
-        data_roots = [root for ds in config.DATASETS for root in ds.train]
-        logger.info("no --data-root given; falling back to config.DATASETS train roots")
-
     loader = build_head_loader(
-        data_roots=data_roots,
+        data_roots=list(args.data_root),
         stats=stats,
         device=device,
         batch_size=args.batch_size,
@@ -307,8 +300,8 @@ if __name__ == "__main__":
         "--data-root",
         type=Path,
         nargs="+",
-        default=None,
-        help="one or more dirs of hard / in-domain images to refit the head on (default: config.DATASETS train roots)",
+        required=True,
+        help="one or more dirs of hard / in-domain images to refit the head on",
     )
     p.add_argument(
         "--output",

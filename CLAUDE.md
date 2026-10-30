@@ -35,7 +35,7 @@ src/
   builders.py    — torchvision transform factories (train/eval)
   stats.py       — dataset mean/std computation with JSON caching
   constants.py   — paths, sizes, rotation list; no imports from config so models can depend on it safely
-  config.py      — dataset roots and sampling config
+  config.py      — build_datasets(root) for the ImageNet+COCO layout
   models/
     rotation.py  — RotationModel (EfficientNet-B0 + LayerNorm/Dropout/Linear head)
     ema.py       — ModelEMA (exponential moving average shadow)
@@ -52,6 +52,7 @@ All scripts are run from the project root with `venv/bin/python src/<script>.py`
 **Train:**
 ```
 venv/bin/python src/train.py \
+    --data-root /path/to/datasets \
     --device cuda --batch-size 256 --num-workers 8 \
     --prefetch-factor 4 --seed 0
 ```
@@ -59,6 +60,7 @@ venv/bin/python src/train.py \
 **Fine-tune (ImageNet-pretrained backbone, short schedule):**
 ```
 venv/bin/python src/train.py \
+    --data-root /path/to/datasets \
     --device cuda --batch-size 256 --num-workers 8 \
     --prefetch-factor 4 --seed 0 --fine-tune
 ```
@@ -71,6 +73,7 @@ alone uses the same pretrained init but keeps the from-scratch schedule defaults
 ```
 venv/bin/python src/validator.py \
     --checkpoint checkpoints/epoch_010.pt \
+    --data-root /path/to/datasets \
     --device cuda --batch-size 256 --num-workers 4 \
     --prefetch-factor 4 --weights ema
 ```
@@ -116,10 +119,13 @@ venv/bin/python src/gradcam.py \
 
 ## Dataset paths
 
-Configured in `src/config.py`. Currently points to ImageNet 2017 and COCO 2017 at:
+Pass the datasets root with `--data-root` on `train.py` / `validator.py`.
+`config.build_datasets(root)` expands the standard ImageNet 2017 + COCO 2017
+layout under it:
+
 ```
-/media/poweruser/data/2-stuff/datasets/ILSVRC2017/...
-/media/poweruser/data/2-stuff/datasets/coco/...
+<root>/ILSVRC2017/Data/CLS-LOC/{train,test,val}/
+<root>/coco/{train2017,test2017,val2017}/
 ```
 
 ## Dependencies
