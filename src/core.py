@@ -566,6 +566,25 @@ def build_dataset(
     ), stats
 
 
+def build_loader(
+    dataset: Dataset,
+    device: torch.device,
+    batch_size: int,
+    num_workers: int,
+    prefetch_factor: int,
+    shuffle: bool,
+) -> DataLoader:
+    """DataLoader with the project's worker and pinning defaults."""
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        pin_memory=device.type == "cuda",
+        shuffle=shuffle,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Checkpoints
 # ---------------------------------------------------------------------------
@@ -616,6 +635,23 @@ def load_checkpoint_model(
 def save_payload(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
+
+
+def checkpoint_payload(
+    model_state: dict,
+    ema_state: dict,
+    stats: NormStats,
+    extras: dict | None = None,
+) -> dict:
+    """Assemble the on-disk checkpoint dict shared by training and DFR."""
+    payload: dict = {
+        "model": model_state,
+        "ema": ema_state,
+        "stats": stats_to_dict(stats),
+    }
+    if extras:
+        payload.update(extras)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -669,16 +705,27 @@ def circular_mean_angle(probs: Sequence[float] | np.ndarray) -> float:
     return float(np.rad2deg(np.arctan2(y, x)) % 360.0)
 
 
+def stack_rotation_views(base: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Stack the four 90° tensor views of one transformed image.
+
+    ``expand=False``: after center-crop the tensor is square, so 90° keeps
+    HxW. ``fill=0`` is mean-gray in normalized space (same family as train).
+    """
+    views = [TF.rotate(base, deg, expand=False) for deg in constants.ROTATIONS]
+    return torch.stack(views).to(device, non_blocking=True)
+
+
 def vote_from_probs(probs: np.ndarray) -> RotationVote:
     order = np.argsort(probs)
     top1_i = int(order[-1])
     top2_i = int(order[-2]) if len(order) > 1 else top1_i
     best_deg = int(constants.ROTATIONS[top1_i])
     margin = float(probs[top1_i] - probs[top2_i])
+    probs_by_deg = {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)}
 
     return RotationVote(
-        probs={deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)},
-        normalized_probs={deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)},
+        probs=probs_by_deg,
+        normalized_probs=dict(probs_by_deg),
         best_deg=best_deg,
         margin=margin,
         angle=circular_mean_angle(probs),
@@ -730,10 +777,7 @@ def predict_rotations(
         std=std,
     )
     base = transform(img)
-    # expand=False: after center-crop the tensor is square; 90° keeps HxW.
-    # fill=0 is mean-gray in normalized space (same family as train).
-    views = [TF.rotate(base, deg, expand=False) for deg in constants.ROTATIONS]
-    batch = torch.stack(views).to(device, non_blocking=True)
+    batch = stack_rotation_views(base, device)
 
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         logits = model(batch)
@@ -782,11 +826,54 @@ class EpochStats:
         return self.grad_norm_sum / max(1, self.grad_steps)
 
 
+def merge_buffers(
+    stats: EpochStats,
+    loss_buf: torch.Tensor,
+    correct_buf: torch.Tensor,
+    grad_norm_buf: torch.Tensor,
+    n: int,
+    steps: int,
+) -> tuple[float, float, float]:
+    """Flush the GPU-side accumulators into *stats*; return window means."""
+    loss_sum = loss_buf.item()
+    correct = int(correct_buf.item())
+    grad_norm_sum = grad_norm_buf.item()
+    stats.merge(
+        loss_sum=loss_sum,
+        correct=correct,
+        grad_norm_sum=grad_norm_sum,
+        n=n,
+        steps=steps,
+    )
+    return (
+        loss_sum / max(1, n),
+        correct / max(1, n),
+        grad_norm_sum / max(1, steps),
+    )
+
+
+def move_batch(
+    imgs: torch.Tensor,
+    labels: torch.Tensor,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Move a training batch to *device* with channels-last images."""
+    return (
+        imgs.to(
+            device,
+            non_blocking=True,
+            memory_format=torch.channels_last,
+        ),
+        labels.to(device, non_blocking=True).float(),
+    )
+
+
 def save_checkpoint(
     path: Path,
     model: nn.Module,
     ema: ModelEMA,
     optimizer: torch.optim.Optimizer,
+    stats: NormStats,
     extras: dict | None = None,
 ) -> None:
     # torch.compile() wraps the module and prefixes state_dict keys with
@@ -795,16 +882,18 @@ def save_checkpoint(
     # Under SAM the real state lives in the wrapped base optimizer; save that
     # so the on-disk state is plain AdamW and resumes with or without --sam.
     base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
-    payload: dict = {
-        "model": raw_model.state_dict(),
-        "ema": ema.state_dict(),
-        "ema_step": ema.step,
-        "optimizer": base_optimizer.state_dict(),
-        "rng_cpu": torch.get_rng_state(),
-        "rng_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
-    }
-    if extras:
-        payload.update(extras)
+    payload = checkpoint_payload(
+        raw_model.state_dict(),
+        ema.state_dict(),
+        stats,
+        extras={
+            "ema_step": ema.step,
+            "optimizer": base_optimizer.state_dict(),
+            "rng_cpu": torch.get_rng_state(),
+            "rng_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
+            **(extras or {}),
+        },
+    )
     save_payload(path, payload)
 
 
@@ -942,6 +1031,7 @@ def train(
     # (argmax over 4 views), so the absolute decision threshold
     # doesn't matter - only the relative ranking.
     loss_fn = nn.BCEWithLogitsLoss()
+    sam_optimizer = optimizer if isinstance(optimizer, SAM) else None
 
     start_epoch = 0
     saved_schedule_total_steps = None
@@ -1038,12 +1128,7 @@ def train(
         pending_steps = 0
 
         for imgs, labels in pbar:
-            imgs = imgs.to(
-                device,
-                non_blocking=True,
-                memory_format=torch.channels_last,
-            )
-            labels = labels.to(device, non_blocking=True).float()
+            imgs, labels = move_batch(imgs, labels, device)
 
             scale = cosine_with_warmup(
                 global_step,
@@ -1062,25 +1147,23 @@ def train(
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
 
-            if isinstance(optimizer, SAM):
+            if sam_optimizer is not None:
                 # First pass climbs to the worst-case point; the second pass
                 # recomputes the gradient there and applies the real update.
-                optimizer.first_step(zero_grad=True)
+                sam_optimizer.first_step(zero_grad=True)
                 disable_running_stats(model)
                 with torch.autocast(device_type=device.type, dtype=autocast):
                     loss_adv = loss_fn(model(imgs), labels)
                 loss_adv.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(),
-                    grad_clip,
-                )
-                optimizer.second_step(zero_grad=True)
+
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                grad_clip,
+            )
+            if sam_optimizer is not None:
+                sam_optimizer.second_step(zero_grad=True)
                 enable_running_stats(model)
             else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(),
-                    grad_clip,
-                )
                 optimizer.step()
             ema.update(model)
 
@@ -1093,13 +1176,11 @@ def train(
             pending_steps += 1
 
             if global_step % constants.LOG_STEP == 0:
-                window_loss = loss_buf.item() / max(1, pending_n)
-                window_acc = int(correct_buf.item()) / max(1, pending_n)
-                window_gn = gn_buf.item() / max(1, pending_steps)
-                epoch_stats.merge(
-                    loss_sum=loss_buf.item(),
-                    correct=int(correct_buf.item()),
-                    grad_norm_sum=gn_buf.item(),
+                window_loss, window_acc, window_gn = merge_buffers(
+                    epoch_stats,
+                    loss_buf,
+                    correct_buf,
+                    gn_buf,
                     n=pending_n,
                     steps=pending_steps,
                 )
@@ -1129,10 +1210,11 @@ def train(
             global_step += 1
 
         if pending_steps > 0:
-            epoch_stats.merge(
-                loss_sum=loss_buf.item(),
-                correct=int(correct_buf.item()),
-                grad_norm_sum=gn_buf.item(),
+            merge_buffers(
+                epoch_stats,
+                loss_buf,
+                correct_buf,
+                gn_buf,
                 n=pending_n,
                 steps=pending_steps,
             )
@@ -1151,13 +1233,13 @@ def train(
             model,
             ema,
             optimizer,
+            stats,
             extras={
                 "epoch": epoch,
                 "schedule_total_steps": total_steps,
                 "schedule_warmup_steps": warmup_steps,
                 "pooling": pooling,
                 "pretrained": pretrained,
-                "stats": stats_to_dict(stats),
             },
         )
         logger.info("saved %s", ckpt)
@@ -1325,14 +1407,13 @@ def validate_checkpoint(
         prefetch_factor=prefetch_factor,
         stats=stats,
     )
-    val_loader = DataLoader(
+    val_loader = build_loader(
         val_ds,
+        device=device,
         batch_size=batch_size,
-        shuffle=False,
         num_workers=num_workers,
-        pin_memory=device.type == "cuda",
-        persistent_workers=False,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        prefetch_factor=prefetch_factor,
+        shuffle=False,
     )
     logger.info(
         "val pairs: %d, device=%s, batch_size=%d, workers=%d, prefetch=%d, max_batches=%s",
@@ -1427,12 +1508,12 @@ def build_head_loader(
         transform=transform,
     )
     logger.info("DFR reweighting set: %d files -> %d pairs", len(files), len(dataset))
-    return DataLoader(
+    return build_loader(
         dataset,
+        device=device,
         batch_size=batch_size,
         num_workers=num_workers,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None,
-        pin_memory=device.type == "cuda",
+        prefetch_factor=prefetch_factor,
         shuffle=True,
     )
 
@@ -1473,12 +1554,7 @@ def retrain_head(
             file=sys.stdout,
         )
         for step, (imgs, labels) in enumerate(pbar):
-            imgs = imgs.to(
-                device,
-                non_blocking=True,
-                memory_format=torch.channels_last,
-            )
-            labels = labels.to(device, non_blocking=True).float()
+            imgs, labels = move_batch(imgs, labels, device)
 
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
                 logits = model(imgs)
@@ -1522,15 +1598,17 @@ def save_dfr_checkpoint(
     The retrained weights go into both ``model`` and ``ema`` so validating
     with either ``--weights ema`` or ``--weights raw`` picks them up.
     """
-    sd = model.state_dict()
-    payload = {
-        "model": sd,
-        "ema": sd,
-        "stats": stats_to_dict(stats),
-        "epoch": "dfr",
-        "pooling": model.pooling,
-        "dfr_source": str(source_checkpoint),
-    }
+    state = model.state_dict()
+    payload = checkpoint_payload(
+        state,
+        state,
+        stats,
+        extras={
+            "epoch": "dfr",
+            "pooling": model.pooling,
+            "dfr_source": str(source_checkpoint),
+        },
+    )
     save_payload(path, payload)
     logger.info("saved DFR checkpoint %s", path)
 
@@ -1712,22 +1790,11 @@ def compute_rotations(
     # rotate the tensor - same geometry as train/infer (RotationPairDataset,
     # infer.predict_rotations), not PIL-rotate-then-transform.
     base = preprocess(pil_img)
-    views = [TF.rotate(base, a, expand=False) for a in constants.ROTATIONS]
-    tensors = torch.stack(views).to(device)
+    tensors = stack_rotation_views(base, device)
 
     cams, logits = compute_gradcam_batch(model, tensors)
     probs = softmax_np(logits).tolist()
     return displays, probs, cams, tensors
-
-
-def visualise(
-    displays: list[Image.Image],
-    probs: list[float],
-    cams: list[np.ndarray],
-    title: str,
-    out_path: Path,
-) -> None:
-    visualise_grid(displays, probs, cams, title, out_path, colormap="jet")
 
 
 # ---------------------------------------------------------------------------
@@ -1809,8 +1876,8 @@ def prefetch_worker(
                 original=blank,
                 corrected=blank,
                 vote=RotationVote(
-                    probs={0: 0.0, 90: 0.0, 180: 0.0, 270: 0.0},
-                    normalized_probs={0: 0.25, 90: 0.25, 180: 0.25, 270: 0.25},
+                    probs=dict.fromkeys(constants.ROTATIONS, 0.0),
+                    normalized_probs=dict.fromkeys(constants.ROTATIONS, 0.25),
                     best_deg=0,
                     margin=0.0,
                     angle=0.0,
@@ -2040,12 +2107,12 @@ def run_train(args: argparse.Namespace) -> None:
         crop_policy=args.crop_policy,
     )
 
-    dl = DataLoader(
+    dl = build_loader(
         ds,
+        device=device,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-        pin_memory=device.type == "cuda",
+        prefetch_factor=args.prefetch_factor,
         shuffle=True,
     )
 
@@ -2188,12 +2255,13 @@ def run_gradcam(args: argparse.Namespace) -> None:
         displays, probs, cams, tensors = compute_rotations(model, pil, preprocess, device)
         angle = circular_mean_angle(probs)
 
-        visualise(
+        visualise_grid(
             displays,
             probs,
             cams,
             f"{img_path.name} - predicted angle {angle:.1f}°",
             args.out_dir / f"{img_path.stem}_gradcam.png",
+            colormap="jet",
         )
         print(f"{img_path.name} - predicted angle {angle:.1f}°")
 
