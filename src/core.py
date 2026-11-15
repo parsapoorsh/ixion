@@ -21,9 +21,9 @@ import sys
 import sysconfig
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import matplotlib as mpl
 import numpy as np
@@ -34,10 +34,10 @@ from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import transforms as T
-from torchvision.transforms import functional as TF
 from tqdm.auto import tqdm
 
 import constants
+from checkpoint import WeightName, load_checkpoint_model, save_checkpoint
 from config import build_dataset_specs
 from data import (
     RotationPairDataset,
@@ -47,8 +47,13 @@ from data import (
     build_train_transform,
     display_preprocess,
 )
+from inference import (
+    RotationVote,
+    circular_mean_angle,
+    predict_rotations,
+    stack_rotation_views,
+)
 from model import SAM, ModelEMA, RotationModel
-from stats import MeanStd
 from utils.image_io import open_rgb
 from utils.index import index_files
 from utils.logsetup import setup_logging
@@ -59,131 +64,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 N_ROTS = len(constants.ROTATIONS)
-
-# Checkpoint keys holding the two weight sets: EMA shadow and raw weights.
-WeightName = Literal["ema", "raw"]
-
-
-# ---------------------------------------------------------------------------
-# Checkpoints
-# ---------------------------------------------------------------------------
-
-
-def load_checkpoint_model(
-    checkpoint: Path,
-    device: torch.device,
-    weights: WeightName = "ema",
-    strict_stats: bool = False,
-) -> tuple[dict, RotationModel, MeanStd]:
-    """Load one weight set and the normalization stats from a checkpoint.
-
-    ``weights`` picks the EMA shadow ("ema", production) or the raw training
-    weights ("raw"). Returned model is in eval mode.
-    """
-    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    if weights not in payload:
-        raise KeyError(f"checkpoint missing '{weights}' weights; keys={list(payload)}")
-
-    raw_stats = payload.get("stats")
-    if not raw_stats:
-        if strict_stats:
-            raise KeyError("checkpoint has no 'stats'; normalization cannot be inferred")
-        cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
-        if not cache_file.exists():
-            raise RuntimeError(f"stats cache not found: {cache_file}")
-        raw_stats = json.loads(cache_file.read_text())
-        logger.info("loaded stats from cache file %s", cache_file)
-    mean_std: MeanStd = (
-        cast(tuple[float, float, float], tuple(raw_stats["mean"])),
-        cast(tuple[float, float, float], tuple(raw_stats["std"])),
-    )
-
-    logger.info(
-        "loaded %s (epoch=%s, ema_step=%s, weights=%s, pooling=%s)",
-        checkpoint,
-        payload.get("epoch"),
-        payload.get("ema_step"),
-        weights,
-        payload.get("pooling", "avg"),
-    )
-    model = RotationModel(
-        pretrained=False,
-        pooling=payload.get("pooling", "avg"),
-    ).to(device)
-    model.load_state_dict(payload[weights])
-    model.eval()
-    return payload, model, mean_std
-
-
-# ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
-
-
-class RotationVote(TypedDict):
-    """Per-rotation upright probabilities and derived product fields.
-
-    `probs` maps each rotation in degrees (0/90/180/270) to its four-view
-    softmax probability (same geometry as training: transform first, then
-    ``TF.rotate``).
-
-    `best_deg` is argmax of `probs` - the counter-clockwise rotation
-    that should be applied, matching ``TF.rotate``, to bring the image upright.
-
-    `margin` is top1 - top2 softmax probability; small values mean ambiguous.
-    """
-
-    probs: dict[int, float]
-    best_deg: int
-    margin: float
-
-
-def circular_mean_angle(probs: Sequence[float] | np.ndarray) -> float:
-    """Weighted circular mean of the four rotation angles, in degrees."""
-    angles = np.deg2rad(constants.ROTATIONS)
-    values = np.asarray(probs, dtype=np.float64)
-    x = float(np.sum(values * np.cos(angles)))
-    y = float(np.sum(values * np.sin(angles)))
-    return float(np.rad2deg(np.arctan2(y, x)) % 360.0)
-
-
-def stack_rotation_views(base: torch.Tensor, device: torch.device) -> torch.Tensor:
-    """Stack the four 90° tensor views of one transformed image.
-
-    ``expand=False``: after center-crop the tensor is square, so 90° keeps
-    HxW. ``fill=0`` is mean-gray in normalized space (same family as train).
-    """
-    views = [TF.rotate(base, deg, expand=False) for deg in constants.ROTATIONS]
-    return torch.stack(views).to(device, non_blocking=True)
-
-
-@torch.no_grad()
-def predict_rotations(
-    model: nn.Module,
-    img: Image.Image,
-    device: torch.device,
-    preprocess: T.Compose,
-) -> RotationVote:
-    """Score four orientations with the same geometry as training.
-
-    Train applies resize/crop/normalize first, then ``TF.rotate`` on the
-    tensor (see ``RotationPairDataset``). Inference matches that order so
-    checkpoints are evaluated under the distribution they saw.
-    """
-    batch = stack_rotation_views(preprocess(img), device)
-
-    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        logits = model(batch)
-    probs = logits.float().softmax(dim=0).reshape(-1).cpu().numpy()
-
-    order = np.argsort(probs)
-    top1_i = int(order[-1])
-    top2_i = int(order[-2])
-    return {
-        "probs": {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)},
-        "best_deg": int(constants.ROTATIONS[top1_i]),
-        "margin": float(probs[top1_i] - probs[top2_i]),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -207,31 +87,6 @@ def move_batch(
     )
 
 
-def save_checkpoint(
-    path: Path,
-    model: nn.Module,
-    ema: ModelEMA,
-    optimizer: SAM,
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
-    extras: dict | None = None,
-) -> None:
-    # torch.compile() wraps the module and prefixes state_dict keys with
-    # "_orig_mod." - unwrap so checkpoints stay portable across compile.
-    raw_model = getattr(model, "_orig_mod", model)
-    payload = {
-        "raw": raw_model.state_dict(),
-        "ema": ema.state_dict(),
-        "stats": {"mean": list(mean), "std": list(std)},
-        "ema_step": ema.step,
-        # The real state lives in SAM's wrapped AdamW.
-        "optimizer": optimizer.base_optimizer.state_dict(),
-        "rng_cpu": torch.get_rng_state(),
-        "rng_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
-        **(extras or {}),
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(payload, path)
 
 
 def cosine_with_warmup(
