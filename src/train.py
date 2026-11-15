@@ -96,35 +96,6 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
-def split_legacy_optimizer_state(
-    state: dict,
-    optimizer: torch.optim.Optimizer,
-) -> dict:
-    """Split a single-group optimizer state into the current backbone/head groups.
-
-    Older checkpoints used one group over model.parameters(); the current
-    groups list the same params in the same order, so slicing the index list
-    maps them one-to-one.
-    """
-    saved_groups = state["param_groups"]
-    if len(saved_groups) != 1 or len(optimizer.param_groups) == 1:
-        return state
-    indices = list(saved_groups[0]["params"])
-    new_groups = []
-    offset = 0
-    for group in optimizer.param_groups:
-        count = len(group["params"])
-        new_groups.append(
-            {
-                **saved_groups[0],
-                "params": indices[offset : offset + count],
-                "lr_scale": group["lr_scale"],
-            }
-        )
-        offset += count
-    return {**state, "param_groups": new_groups}
-
-
 def cosine_with_warmup(
     step: int,
     total_steps: int,
@@ -196,17 +167,15 @@ def setup_model(
     # Peek at the checkpoint before building the model so resumes honour the
     # pooling variant it was trained with (attention vs global average).
     resume_payload = None
-    resume_pooling = pooling
     if resume_from is not None:
         resume_payload = torch.load(resume_from, map_location=device, weights_only=False)
-        resume_pooling = str(resume_payload.get("pooling", pooling))
 
     # Resumes overwrite every weight anyway, so skip the download there.
     model = RotationModel(
         pretrained=pretrained and resume_from is None,
         drop_rate=drop_rate,
         drop_path_rate=drop_path_rate,
-        pooling=resume_pooling,
+        pooling=pooling if resume_payload is None else str(resume_payload["pooling"]),
     ).to(device)
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
     ema = ModelEMA(
@@ -252,32 +221,22 @@ def setup_model(
         model.load_state_dict(payload["model"])
 
         ema.module.load_state_dict(payload["ema"])
-        ema.step = int(payload.get("ema_step", 0))
+        ema.step = int(payload["ema_step"])
 
-        if "optimizer" in payload:
-            # Saved state is plain base-optimizer (AdamW) state; load it into
-            # the base so resume works whether or not SAM wraps it this run.
-            base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
-            base_optimizer.load_state_dict(
-                split_legacy_optimizer_state(
-                    payload["optimizer"],
-                    base_optimizer,
-                )
-            )
+        # Saved state is plain base-optimizer (AdamW) state; load it into the
+        # base so resume works whether or not SAM wraps it this run.
+        base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
+        base_optimizer.load_state_dict(payload["optimizer"])
 
-        if "rng_cpu" in payload:
-            torch.set_rng_state(payload["rng_cpu"].cpu())
-
-        if payload.get("rng_cuda") is not None and torch.cuda.is_available():
-            # map_location=device pulls the saved ByteTensors to CUDA, but
-            # set_rng_state_all requires CPU ByteTensors - move them back.
+        # map_location=device pulls the saved ByteTensors to CUDA, but
+        # set_rng_state_all requires CPU ByteTensors - move them back.
+        torch.set_rng_state(payload["rng_cpu"].cpu())
+        if payload["rng_cuda"] is not None and torch.cuda.is_available():
             torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in payload["rng_cuda"]])
 
         start_epoch = int(payload["epoch"]) + 1
-        if "schedule_total_steps" in payload:
-            schedule_total_steps = int(payload["schedule_total_steps"])
-        if "schedule_warmup_steps" in payload:
-            schedule_warmup_steps = int(payload["schedule_warmup_steps"])
+        schedule_total_steps = int(payload["schedule_total_steps"])
+        schedule_warmup_steps = int(payload["schedule_warmup_steps"])
         logger.info(
             "resumed from %s (next epoch=%d, ema_step=%d)",
             resume_from,
