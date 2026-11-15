@@ -29,7 +29,7 @@ from torchvision import transforms as T
 from torchvision.transforms import functional as TF
 
 import constants
-from models.rotation import RotationModel
+from model.rotation import RotationModel
 from stats import NormStats, load_stats_cache
 from utils.image_io import open_rgb
 

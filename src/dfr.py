@@ -37,7 +37,7 @@ from tqdm.auto import tqdm
 import constants
 from builders import build_train_transform
 from datasets import ImageLoader, RotationPairDataset
-from models import RotationModel
+from model import RotationModel
 from stats import NormStats
 from utils.index import index_files
 from utils.logsetup import setup_logging

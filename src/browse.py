@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 from constants import INDEX_CACHE_DIR
 from infer import RotationVote, predict_rotations
-from models import RotationModel
+from model import RotationModel
 from stats import NormStats, load_stats_cache
 from utils.image_io import open_rgb
 

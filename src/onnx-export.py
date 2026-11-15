@@ -23,7 +23,7 @@ from pathlib import Path
 import torch
 
 import constants
-from models.rotation import RotationModel
+from model.rotation import RotationModel
 from stats import NormStats, load_stats_cache
 from utils.logsetup import setup_logging
 

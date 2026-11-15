@@ -27,8 +27,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import constants
-from models import ModelEMA, RotationModel
-from sam import SAM, disable_running_stats, enable_running_stats
+from model import ModelEMA, RotationModel, SAM, disable_running_stats, enable_running_stats
 from stats import NormStats
 
 logger = logging.getLogger(__name__)

@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 import config
 import constants
 from datasets import build_dataset
-from models import RotationModel
+from model import RotationModel
 from stats import NormStats, load_stats_cache
 from utils.logsetup import setup_logging
 
