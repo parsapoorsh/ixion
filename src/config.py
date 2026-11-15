@@ -6,12 +6,25 @@ Train/val roots are not pinned here - pass the datasets root at the CLI
 directory exists.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from logging import getLogger
 
-from datasets import DatasetSpec
-
 logger = getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    """A train/val pair on disk.
+
+    mean/std are not pinned here - ``stats.get_stats`` samples the train
+    split and caches the result. Set them explicitly to pin to fixed
+    constants (e.g. ImageNet stats) and skip the scan.
+    """
+
+    name: str
+    train: list[Path]
+    val: list[Path]
 
 # ImageNet normalization constants - left here as a convenience for anyone
 # who wants to pin a DatasetSpec to fixed stats instead of computing them.

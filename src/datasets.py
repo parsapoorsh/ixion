@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import random
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -30,25 +29,12 @@ if TYPE_CHECKING:
 
 import constants
 from builders import build_eval_transform, build_train_transform
+from config import DatasetSpec
 from stats import NormStats, compute_stats
 from utils.image_io import open_rgb
 from utils.index import cache_fingerprint, index_files
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class DatasetSpec:
-    """A train/val pair on disk, with the normalization stats that go with it.
-
-    mean/std default to None - in that case stats.get_stats samples the
-    train split and caches the result. Set them explicitly to pin to fixed
-    constants (e.g. ImageNet stats) and skip the scan.
-    """
-
-    name: str
-    train: list[Path]
-    val: list[Path]
 
 
 class ImageLoader(Dataset):
