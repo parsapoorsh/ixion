@@ -353,14 +353,6 @@ def train(
     logger.info("done.")
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
-
-@torch.no_grad()
-
-
 def run_train(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
 

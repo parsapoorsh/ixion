@@ -401,11 +401,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    # Import the training stack only when a subcommand runs, so `cli.py --help`
+    # Import the command stack only when a subcommand runs, so `cli.py --help`
     # stays free of torch/timm.
-    import core
+    import dispatch
 
-    core.run(args)
+    dispatch.run(args)
 
 
 if __name__ == "__main__":

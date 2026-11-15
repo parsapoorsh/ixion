@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 N_ROTS = len(constants.ROTATIONS)
 
+@torch.no_grad()
 def run_validation(
     model: nn.Module,
     loader: DataLoader,
