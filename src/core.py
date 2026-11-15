@@ -44,7 +44,7 @@ from torchvision.transforms import functional as TF
 from tqdm.auto import tqdm
 
 import constants
-from config import DatasetSpec, build_datasets
+from config import DatasetSpec, build_dataset_specs
 from model import SAM, ModelEMA, RotationModel
 from utils.image_io import open_rgb
 from utils.index import cache_fingerprint, index_files
@@ -68,7 +68,7 @@ WEIGHT_KEYS = {"ema": "ema", "raw": "model"}
 MeanStd = tuple[tuple[float, float, float], tuple[float, float, float]]
 
 
-def stats_dict(
+def stats_to_dict(
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
 ) -> dict[str, list[float]]:
@@ -173,7 +173,6 @@ def iter_stats_results(
 
 def compute_stats(
     files: Sequence[Path],
-    device: torch.device,
     num_workers: int,
     batch_size: int,
     prefetch_factor: int,
@@ -252,7 +251,7 @@ def compute_stats(
         cast(tuple[float, float, float], tuple(std_arr.tolist())),
     )
     if cache_path is not None:
-        payload: dict = stats_dict(*mean_std)
+        payload: dict = stats_to_dict(*mean_std)
         if fingerprint is not None:
             payload["fingerprint"] = fingerprint
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -348,17 +347,15 @@ class ImageLoader(Dataset):
         self,
         files: Sequence[Path],
         transform: Callable | None = None,
-        preview_size: tuple[int, int] | None = None,
     ) -> None:
         self.files = files
         self.transform = transform
-        self.preview_size = preview_size
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int) -> Image.Image | torch.Tensor:
-        img = open_rgb(self.files[idx], preview_size=self.preview_size)
+        img = open_rgb(self.files[idx])
         if self.transform is not None:
             return self.transform(img)
         return img
@@ -402,7 +399,6 @@ class RotationPairDataset(Dataset):
 def build_dataset(
     split: Literal["train", "val"],
     datasets: Sequence[DatasetSpec],
-    device: torch.device,
     num_workers: int,
     batch_size: int,
     prefetch_factor: int,
@@ -446,7 +442,6 @@ def build_dataset(
         )
         mean_std = compute_stats(
             files=files,
-            device=device,
             num_workers=num_workers,
             batch_size=batch_size,
             prefetch_factor=prefetch_factor,
@@ -551,7 +546,7 @@ def checkpoint_payload(
     payload: dict = {
         "model": model_state,
         "ema": ema_state,
-        "stats": stats_dict(mean, std),
+        "stats": stats_to_dict(mean, std),
     }
     if extras:
         payload.update(extras)
@@ -570,22 +565,15 @@ class RotationVote(TypedDict):
     softmax probability (same geometry as training: transform first, then
     ``TF.rotate``).
 
-    `normalized_probs` is retained as an alias of `probs` for callers.
-
     `best_deg` is argmax of `probs` - the counter-clockwise rotation
     that should be applied, matching ``TF.rotate``, to bring the image upright.
 
     `margin` is top1 - top2 softmax probability; small values mean ambiguous.
-
-    `angle` is the weighted circular mean of the `probs` votes
-    (secondary; prefer `best_deg` for discrete 90° correction).
     """
 
     probs: dict[int, float]
-    normalized_probs: dict[int, float]
     best_deg: int
     margin: float
-    angle: float
 
 
 def circular_mean_angle(probs: Sequence[float] | np.ndarray) -> float:
@@ -638,10 +626,8 @@ def predict_rotations(
     probs_by_deg = {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)}
     return {
         "probs": probs_by_deg,
-        "normalized_probs": dict(probs_by_deg),
         "best_deg": int(constants.ROTATIONS[top1_i]),
         "margin": float(probs[top1_i] - probs[top2_i]),
-        "angle": circular_mean_angle(probs),
     }
 
 
@@ -671,18 +657,6 @@ class EpochStats:
         self.seen += n
         self.grad_norm_sum += grad_norm_sum
         self.grad_steps += steps
-
-    @property
-    def avg_loss(self) -> float:
-        return self.loss_sum / max(1, self.seen)
-
-    @property
-    def acc(self) -> float:
-        return self.correct / max(1, self.seen)
-
-    @property
-    def avg_grad_norm(self) -> float:
-        return self.grad_norm_sum / max(1, self.grad_steps)
 
     def merge_buffers(
         self,
@@ -1120,7 +1094,7 @@ def run_validation(
     ``RotationPairDataset`` is ordered as base0-rot0..3,
     base1-rot0..3, and so on when ``shuffle=False``.
     """
-    model.train(False)
+    model.eval()
     total_loss = 0.0
     loss_fn = nn.CrossEntropyLoss(reduction="sum")
     n_batches = len(loader) if max_batches is None else min(len(loader), max_batches)
@@ -1136,12 +1110,18 @@ def run_validation(
     margins: list[float] = []
     corrects: list[bool] = []
 
-    def flush_groups() -> None:
-        nonlocal group4_correct, group4_total, total_loss
-        nonlocal margin_ok_sum, margin_bad_sum, margin_ok_n, margin_bad_n
-        while len(logit_buf) >= N_ROTS:
-            chunk = torch.stack(logit_buf[:N_ROTS])
-            del logit_buf[:N_ROTS]
+    for batch_idx, batch in enumerate(loader):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
+        imgs = batch[0].to(device, non_blocking=True)
+        logits = model(imgs)
+
+        for logit in logits.detach().float().reshape(-1):
+            logit_buf.append(logit)
+            if len(logit_buf) < N_ROTS:
+                continue
+            chunk = torch.stack(logit_buf)
+            logit_buf.clear()
             # Training target: rot 0 is upright. Product pick: argmax logit.
             probs = chunk.softmax(dim=0)
             pred = int(probs.argmax().item())
@@ -1161,16 +1141,6 @@ def run_validation(
             else:
                 margin_bad_sum += margin
                 margin_bad_n += 1
-
-    for batch_idx, batch in enumerate(loader):
-        if max_batches is not None and batch_idx >= max_batches:
-            break
-        imgs = batch[0].to(device, non_blocking=True)
-        logits = model(imgs)
-
-        for logit in logits.detach().float().reshape(-1):
-            logit_buf.append(logit)
-        flush_groups()
 
         if batch_idx % constants.LOG_STEP == 0:
             g4 = group4_correct / max(1, group4_total)
@@ -1250,8 +1220,7 @@ def validate_checkpoint(
 
     val_ds, _ = build_dataset(
         split="val",
-        datasets=build_datasets(data_root),
-        device=device,
+        datasets=build_dataset_specs(data_root),
         num_workers=num_workers,
         batch_size=batch_size,
         prefetch_factor=prefetch_factor,
@@ -1417,12 +1386,13 @@ class GradCAM:
         fh = target_layer.register_forward_hook(fwd)
         bh = target_layer.register_full_backward_hook(bwd)  # type: ignore[arg-type]
 
-        output = self.model(tensor)  # (B,) or (B, 1)
-        self.model.zero_grad()
-        output.sum().backward()  # per-sample grads are independent
-
-        fh.remove()
-        bh.remove()
+        try:
+            output = self.model(tensor)  # (B,) or (B, 1)
+            self.model.zero_grad()
+            output.sum().backward()  # per-sample grads are independent
+        finally:
+            fh.remove()
+            bh.remove()
 
         feat = saved_features[0]  # (B, C, H, W)
         grad = saved_grads[0]  # (B, C, H, W)
@@ -1504,48 +1474,6 @@ class GradCAM:
             guided_out.append(guided)
         return guided_out
 
-    @staticmethod
-    def overlay(
-        pil_img: Image.Image,
-        cam: np.ndarray,
-        alpha: float = 0.65,
-        colormap: str = "jet",
-    ) -> Image.Image:
-        cam = np.sqrt(cam)  # spread activation - avoids tiny concentrated hot spots
-        heatmap = mpl.colormaps[colormap](cam)[:, :, :3]
-        heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(pil_img.size, Image.Resampling.BICUBIC)
-        blended = np.array(pil_img, dtype=np.float32) * (1 - alpha) + np.array(heatmap_pil, dtype=np.float32) * alpha
-        return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
-
-    def grid(
-        self,
-        displays: list[Image.Image],
-        probs: list[float],
-        heatmaps: list[np.ndarray],
-        title: str,
-        out_path: Path,
-        colormap: str = "jet",
-    ) -> None:
-        """Render a 2x2 rotation grid with `heatmaps[i]` overlaid on `displays[i]`."""
-        pred = int(np.argmax(probs))
-
-        fig = Figure(figsize=(10, 10))
-        axes = fig.subplots(2, 2)
-
-        for idx, (angle, heat, prob, disp) in enumerate(
-            zip(constants.ROTATIONS, heatmaps, probs, displays, strict=True)
-        ):
-            img_overlay = self.overlay(disp, heat, colormap=colormap)
-            ax = axes[idx // 2, idx % 2]
-            marker = " *" if idx == pred else ""
-            ax.imshow(img_overlay)
-            ax.set_title(f"{angle}°{marker}  softmax={prob:.0%}", fontsize=11)
-            ax.axis("off")
-
-        fig.suptitle(title, fontsize=11)
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-
     def rotations(
         self,
         pil_img: Image.Image,
@@ -1563,6 +1491,53 @@ class GradCAM:
         cams, logits = self.compute(tensors)
         probs = torch.softmax(torch.tensor(logits, dtype=torch.float64), dim=0).tolist()
         return displays, probs, cams, tensors
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+
+def overlay_heatmap(
+    pil_img: Image.Image,
+    cam: np.ndarray,
+    alpha: float = 0.65,
+    colormap: str = "jet",
+) -> Image.Image:
+    cam = np.sqrt(cam)  # spread activation - avoids tiny concentrated hot spots
+    heatmap = mpl.colormaps[colormap](cam)[:, :, :3]
+    heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(pil_img.size, Image.Resampling.BICUBIC)
+    blended = np.array(pil_img, dtype=np.float32) * (1 - alpha) + np.array(heatmap_pil, dtype=np.float32) * alpha
+    return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
+
+
+def render_rotation_grid(
+    displays: list[Image.Image],
+    probs: list[float],
+    heatmaps: list[np.ndarray],
+    title: str,
+    out_path: Path,
+    colormap: str = "jet",
+) -> None:
+    """Render a 2x2 rotation grid with `heatmaps[i]` overlaid on `displays[i]`."""
+    pred = int(np.argmax(probs))
+
+    fig = Figure(figsize=(10, 10))
+    axes = fig.subplots(2, 2)
+
+    for idx, (angle, heat, prob, disp) in enumerate(
+        zip(constants.ROTATIONS, heatmaps, probs, displays, strict=True)
+    ):
+        img_overlay = overlay_heatmap(disp, heat, colormap=colormap)
+        ax = axes[idx // 2, idx % 2]
+        marker = " *" if idx == pred else ""
+        ax.imshow(img_overlay)
+        ax.set_title(f"{angle}°{marker}  softmax={prob:.0%}", fontsize=11)
+        ax.axis("off")
+
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
 
 
 # ---------------------------------------------------------------------------
@@ -1587,10 +1562,8 @@ DONE = object()  # sentinel pushed by worker when exhausted
 
 class InferResult(TypedDict):
     path: Path
-    original: Image.Image
     corrected: Image.Image
     vote: RotationVote
-    best_deg: int
     abstained: bool
     error: str | None
 
@@ -1627,27 +1600,21 @@ def prefetch_worker(
                 corrected = original.rotate(best_deg, expand=True)
             result: InferResult = {
                 "path": path,
-                "original": original,
                 "corrected": corrected,
                 "vote": vote,
-                "best_deg": best_deg,
                 "abstained": abstained,
                 "error": None,
             }
         except Exception as exc:
-            blank = Image.new("RGB", (224, 224), color=(30, 30, 30))
+            blank = Image.new("RGB", (constants.INPUT_SIZE, constants.INPUT_SIZE), color=(30, 30, 30))
             result = {
                 "path": path,
-                "original": blank,
                 "corrected": blank,
                 "vote": {
-                    "probs": dict.fromkeys(constants.ROTATIONS, 0.0),
-                    "normalized_probs": dict.fromkeys(constants.ROTATIONS, 0.25),
+                    "probs": dict.fromkeys(constants.ROTATIONS, 0.25),
                     "best_deg": 0,
                     "margin": 0.0,
-                    "angle": 0.0,
                 },
-                "best_deg": 0,
                 "abstained": False,
                 "error": str(exc),
             }
@@ -1665,11 +1632,11 @@ def show_result(result: InferResult, index: int, total: int) -> None:
     from PIL import ImageTk
 
     vote = result["vote"]
-    prob_str = "  ".join(f"{deg}°: {prob:.3f}" for deg, prob in sorted(vote["normalized_probs"].items()))
+    prob_str = "  ".join(f"{deg}°: {prob:.3f}" for deg, prob in sorted(vote["probs"].items()))
     if result["abstained"]:
         decision = f"ABSTAIN (margin={vote['margin']:.3f})"
     else:
-        decision = f"correction: {result['best_deg']}° (margin={vote['margin']:.3f})"
+        decision = f"correction: {vote['best_deg']}° (margin={vote['margin']:.3f})"
     title = f"[{index}/{total}]  {result['path'].name}  ->  {decision}  |  {prob_str}"
 
     root = tk.Tk()
@@ -1808,20 +1775,19 @@ def run_train(args: argparse.Namespace) -> None:
 
     # Pretrained features expect the ImageNet normalization they were trained
     # with; from-scratch runs compute stats over the train split instead.
-    pretrain_stats = (
+    pretrain_mean_std = (
         (IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
         if args.pretrain
         else None
     )
-    datasets = build_datasets(args.data_root)
+    datasets = build_dataset_specs(args.data_root)
     ds, (mean, std) = build_dataset(
         split="train",
         datasets=datasets,
-        device=device,
         num_workers=args.num_workers,
         batch_size=args.batch_size,
         prefetch_factor=args.prefetch_factor,
-        mean_std=pretrain_stats,
+        mean_std=pretrain_mean_std,
         invalidate_cache=args.invalidate_cache,
         erasing_p=args.erasing_p,
         crop_policy=args.crop_policy,
@@ -1921,36 +1887,36 @@ def run_browse(args: argparse.Namespace) -> None:
         if item is DONE:
             break
 
-        assert isinstance(item, dict)
+        result = cast(InferResult, item)
         processed += 1
 
-        vote = item["vote"]
-        best_norm = max(vote["normalized_probs"].values())
-        if not item["error"] and best_norm >= args.conf_threshold:
+        vote = result["vote"]
+        best_norm = max(vote["probs"].values())
+        if not result["error"] and best_norm >= args.conf_threshold:
             skipped += 1
             tqdm.write(
-                f"[{processed}/{len(paths)}]  {item['path'].name}"
+                f"[{processed}/{len(paths)}]  {result['path'].name}"
                 f"  skipped (conf={best_norm:.3f} >= {args.conf_threshold})"
             )
             continue
 
         shown += 1
-        if item["abstained"]:
+        if result["abstained"]:
             abstained += 1
 
-        if item["error"]:
-            tqdm.write(f"[{processed}/{len(paths)}]  {item['path']}  ERROR: {item['error']}")
+        if result["error"]:
+            tqdm.write(f"[{processed}/{len(paths)}]  {result['path']}  ERROR: {result['error']}")
         else:
-            status = "abstain" if item["abstained"] else f"best={item['best_deg']}°"
+            status = "abstain" if result["abstained"] else f"best={vote['best_deg']}°"
             tqdm.write(
-                f"[{processed}/{len(paths)}]  {item['path'].name}"
+                f"[{processed}/{len(paths)}]  {result['path'].name}"
                 f"  {status}"
                 f"  margin={vote['margin']:.3f}"
                 f"  conf={best_norm:.3f}"
-                f"  norm={{{', '.join(f'{d}°:{p:.3f}' for d, p in sorted(vote['normalized_probs'].items()))}}}"
+                f"  norm={{{', '.join(f'{d}°:{p:.3f}' for d, p in sorted(vote['probs'].items()))}}}"
             )
 
-        show_result(cast(InferResult, item), shown, len(paths))
+        show_result(result, shown, len(paths))
 
     bar.close()
     worker.join()
@@ -1972,14 +1938,14 @@ def run_gradcam(args: argparse.Namespace) -> None:
     )
     gradcam = GradCAM(model, device, mean, std)
 
-    args.out_dir.mkdir(exist_ok=True)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
 
     for img_path in images:
         pil = open_rgb(img_path)
         displays, probs, cams, tensors = gradcam.rotations(pil)
         angle = circular_mean_angle(probs)
 
-        gradcam.grid(
+        render_rotation_grid(
             displays,
             probs,
             cams,
@@ -1990,7 +1956,7 @@ def run_gradcam(args: argparse.Namespace) -> None:
         print(f"{img_path.name} - predicted angle {angle:.1f}°")
 
         guided_cams = gradcam.guided(tensors, cams)
-        gradcam.grid(
+        render_rotation_grid(
             displays,
             probs,
             guided_cams,
@@ -2098,7 +2064,7 @@ def run_export(args: argparse.Namespace) -> None:
         "weights": args.weights,
         "pooling": payload.get("pooling", "avg"),
         "pretrained": payload.get("pretrained"),
-        **stats_dict(mean, std),
+        **stats_to_dict(mean, std),
         "input_size": constants.INPUT_SIZE,
         "resize_size": constants.RESIZE_SIZE,
         "rotations": list(constants.ROTATIONS),

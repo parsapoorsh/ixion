@@ -39,7 +39,7 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
         "--data-root",
         type=Path,
         required=True,
-        help=("root directory that contains the ImageNet 2017 and COCO 2017 layout (see config.build_datasets)"),
+        help=("root directory that contains the ImageNet 2017 and COCO 2017 layout (see config.build_dataset_specs)"),
     )
     p.add_argument(
         "--device",

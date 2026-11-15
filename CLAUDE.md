@@ -34,7 +34,7 @@ src/
                    loading, validation, four-view inference, GradCAM, browse,
                    DFR head retraining, ONNX export, and the subcommand bodies
   constants.py   — paths, sizes, rotation list; no imports from config so models can depend on it safely
-  config.py      — DatasetSpec + build_datasets(root) for the ImageNet+COCO layout
+  config.py      — DatasetSpec + build_dataset_specs(root) for the ImageNet+COCO layout
   model/
     rotation.py  — RotationModel (EfficientNet-B0 + LayerNorm/Dropout/Linear head)
     attention.py — SpatialAttentionPool
@@ -138,7 +138,7 @@ venv/bin/python src/cli.py export \
 
 Pass the datasets root with `--data-root` on the `train`, `finetune`, and
 `validate` subcommands of `cli.py`.
-`config.build_datasets(root)` expands the standard ImageNet 2017 + COCO 2017
+`config.build_dataset_specs(root)` expands the standard ImageNet 2017 + COCO 2017
 layout under it:
 
 ```

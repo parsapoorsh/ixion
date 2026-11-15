@@ -1,7 +1,7 @@
 """Dataset layout helpers for the rotation detector.
 
 Train/val roots are not pinned here - pass the datasets root at the CLI
-(``--data-root``) and ``build_datasets`` expands the standard ImageNet 2017
+(``--data-root``) and ``build_dataset_specs`` expands the standard ImageNet 2017
 + COCO 2017 layout under it. Each corpus is included only when its top-level
 directory exists.
 """
@@ -26,13 +26,7 @@ class DatasetSpec(TypedDict):
     val: list[Path]
 
 
-# ImageNet normalization constants - pass them as explicit mean/std to skip
-# scanning the train split.
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
-
-
-def build_datasets(root: Path) -> list[DatasetSpec]:
+def build_dataset_specs(root: Path) -> list[DatasetSpec]:
     """Build ImageNet / COCO specs under *root* for corpora that are present.
 
     Expected layout (each top-level dir is optional)::
