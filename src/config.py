@@ -16,7 +16,7 @@ logger = getLogger(__name__)
 class DatasetSpec(TypedDict):
     """A train/val pair on disk.
 
-    Normalization stats are not pinned here - ``core.build_dataset``
+    Normalization stats are not pinned here - ``data.build_dataset``
     samples the train split and caches the result unless explicit
     mean/std are passed.
     """
