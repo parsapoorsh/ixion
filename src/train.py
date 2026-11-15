@@ -154,26 +154,22 @@ def cosine_with_warmup(
     return 0.5 * (1.0 + math.cos(math.pi * t))
 
 
-def python_headers_available() -> bool:
-    for key in ("include", "platinclude"):
-        include_dir = sysconfig.get_path(key)
-        if include_dir is not None and (Path(include_dir) / "Python.h").exists():
-            return True
-    return False
-
-
-def python_headers_package_hint() -> str:
-    version = sysconfig.get_python_version()
-    return f"sudo apt install python{version}-dev"
-
-
-def can_compile_model(device: torch.device) -> tuple[bool, str | None]:
+def can_compile_model() -> tuple[bool, str | None]:
     if shutil.which("gcc") is None:
         return False, "gcc is not available; install it with sudo apt install build-essential"
+
+    def python_headers_available() -> bool:
+        for key in ("include", "platinclude"):
+            include_dir = sysconfig.get_path(key)
+            if include_dir is not None and (Path(include_dir) / "Python.h").exists():
+                return True
+        return False
+
     if not python_headers_available():
+        version = sysconfig.get_python_version()
         return False, (
             f"Python.h is not available under {sysconfig.get_path('include')}; "
-            f"install Python headers with {python_headers_package_hint()}"
+            f"install Python headers with sudo apt install python{version}-dev"
         )
     return True, None
 
@@ -309,7 +305,7 @@ def setup_model(
     # Compile after any state_dict load so checkpoints are saved/loaded in
     # uncompiled form (no "_orig_mod." prefix in the on-disk dict).
     if compile_model:
-        can_compile, reason = can_compile_model(device)
+        can_compile, reason = can_compile_model()
         if can_compile:
             model = cast(RotationModel, torch.compile(model))
             logger.info("enabled torch.compile")
