@@ -170,12 +170,26 @@ def setup_model(
     if resume_from is not None:
         resume_payload = torch.load(resume_from, map_location=device, weights_only=False)
 
+    # The checkpoint's own values win over this run's flags; say so when they
+    # disagree instead of silently dropping what the user asked for.
+    resume_pooling = None
+    if resume_payload is not None:
+        resume_pooling = str(resume_payload["pooling"])
+        if resume_pooling != pooling:
+            logger.info(
+                "resuming with the checkpoint's pooling=%s (ignoring --pooling %s)",
+                resume_pooling,
+                pooling,
+            )
+    if pretrained and resume_payload is not None:
+        logger.info("ignoring --pretrain: the resume overwrites every weight")
+
     # Resumes overwrite every weight anyway, so skip the download there.
     model = RotationModel(
         pretrained=pretrained and resume_from is None,
         drop_rate=drop_rate,
         drop_path_rate=drop_path_rate,
-        pooling=pooling if resume_payload is None else str(resume_payload["pooling"]),
+        pooling=pooling if resume_pooling is None else resume_pooling,
     ).to(device)
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
     ema = ModelEMA(
@@ -325,9 +339,23 @@ def train(
         logger.info("initialized backbone from ImageNet-pretrained weights")
 
     requested_total_steps = steps_per_epoch * epochs
-    total_steps = saved_schedule_total_steps if saved_schedule_total_steps is not None else requested_total_steps
     requested_warmup_steps = int(steps_per_epoch * warmup_epochs)
+    total_steps = saved_schedule_total_steps if saved_schedule_total_steps is not None else requested_total_steps
     warmup_steps = saved_schedule_warmup_steps if saved_schedule_warmup_steps is not None else requested_warmup_steps
+    if saved_schedule_total_steps is not None and (
+        saved_schedule_total_steps != requested_total_steps or saved_schedule_warmup_steps != requested_warmup_steps
+    ):
+        logger.info(
+            "checkpoint schedule wins for the LR curve: total %d, warmup %d "
+            "(--epochs %d and --warmup-epochs %s would give total %d, warmup %d; "
+            "the run still stops after --epochs)",
+            saved_schedule_total_steps,
+            saved_schedule_warmup_steps,
+            epochs,
+            warmup_epochs,
+            requested_total_steps,
+            requested_warmup_steps,
+        )
     logger.info(
         "%d epochs x %d steps, schedule total %d (warmup %d steps)",
         epochs,
