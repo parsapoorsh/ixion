@@ -6,30 +6,28 @@ Train/val roots are not pinned here - pass the datasets root at the CLI
 directory exists.
 """
 
-from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
+from typing import TypedDict
 
 logger = getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class DatasetSpec:
+class DatasetSpec(TypedDict):
     """A train/val pair on disk.
 
-    mean/std are not pinned here - ``core.compute_stats`` samples the train
-    split and caches the result. Set them explicitly to pin to fixed
-    constants (e.g. ImageNet stats) and skip the scan.
+    Normalization stats are not pinned here - ``core.build_dataset``
+    samples the train split and caches the result unless explicit
+    mean/std are passed.
     """
 
     name: str
     train: list[Path]
     val: list[Path]
 
-# ImageNet normalization constants - left here as a convenience for anyone
-# who wants to pin a DatasetSpec to fixed stats instead of computing them.
-# Defaults pass None so stats.get_stats derives mean/std from the train
-# split and caches the result.
+
+# ImageNet normalization constants - pass them as explicit mean/std to skip
+# scanning the train split.
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -50,32 +48,32 @@ def build_datasets(root: Path) -> list[DatasetSpec]:
     if imagenet_path.exists():
         logger.info(f"found ImageNet2017 at: {imagenet_path}")
         result.append(
-            DatasetSpec(
-                name="imagenet",
-                train=[
+            {
+                "name": "imagenet",
+                "train": [
                     imagenet_path / "Data" / "CLS-LOC" / "train",
                     imagenet_path / "Data" / "CLS-LOC" / "test",
                 ],
-                val=[
+                "val": [
                     imagenet_path / "Data" / "CLS-LOC" / "val",
                 ],
-            )
+            }
         )
 
     coco_path = root / "coco"
     if coco_path.exists():
         logger.info(f"found coco at: {coco_path}")
         result.append(
-            DatasetSpec(
-                name="coco",
-                train=[
+            {
+                "name": "coco",
+                "train": [
                     coco_path / "train2017",
                     coco_path / "test2017",
                 ],
-                val=[
+                "val": [
                     coco_path / "val2017",
                 ],
-            )
+            }
         )
 
     if not result:

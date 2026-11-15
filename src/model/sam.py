@@ -91,17 +91,15 @@ class SAM(torch.optim.Optimizer):
         super().load_state_dict(state_dict)
         self.base_optimizer.param_groups = self.param_groups
 
+    def disable_running_stats(self, model: torch.nn.Module) -> None:
+        """Freeze BatchNorm running stats (momentum -> 0) for the second pass."""
+        for module in model.modules():
+            if hasattr(module, "running_mean") and getattr(module, "momentum", None) is not None:
+                module.backup_momentum = module.momentum
+                module.momentum = 0.0  # type: ignore[assignment]
 
-def disable_running_stats(model: torch.nn.Module) -> None:
-    """Freeze BatchNorm running stats (momentum -> 0) for the second pass."""
-    for module in model.modules():
-        if hasattr(module, "running_mean") and getattr(module, "momentum", None) is not None:
-            module.backup_momentum = module.momentum
-            module.momentum = 0.0  # type: ignore[assignment]
-
-
-def enable_running_stats(model: torch.nn.Module) -> None:
-    """Restore BatchNorm momentum saved by ``disable_running_stats``."""
-    for module in model.modules():
-        if hasattr(module, "running_mean") and hasattr(module, "backup_momentum"):
-            module.momentum = module.backup_momentum
+    def enable_running_stats(self, model: torch.nn.Module) -> None:
+        """Restore BatchNorm momentum saved by ``disable_running_stats``."""
+        for module in model.modules():
+            if hasattr(module, "running_mean") and hasattr(module, "backup_momentum"):
+                module.momentum = module.backup_momentum

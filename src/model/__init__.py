@@ -8,13 +8,11 @@ its pooling layer in ``attention.py``, and the training-side wrappers
 from model.attention import SpatialAttentionPool
 from model.ema import ModelEMA
 from model.rotation import RotationModel
-from model.sam import SAM, disable_running_stats, enable_running_stats
+from model.sam import SAM
 
 __all__ = [
     "ModelEMA",
     "RotationModel",
     "SAM",
     "SpatialAttentionPool",
-    "disable_running_stats",
-    "enable_running_stats",
 ]

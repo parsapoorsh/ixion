@@ -125,7 +125,7 @@ venv/bin/python src/cli.py export \
 - **EMA weights are the production weights.** Raw training weights are also saved but
   EMA is what you should validate and ship.
 - **Abstain on low margin.** Prefer leaving ambiguous images alone over a forced wrong
-  90° correction (`RotationVote.margin` / browse `--abstain-margin`).
+  90° correction (`margin` / browse `--abstain-margin`).
 - **JXL support.** `pillow-jxl-plugin` is registered at import time in `utils/image_io.py`
   so both `.jxl` and standard formats work everywhere without any per-callsite setup.
 - **Stats caching.** Dataset mean/std are computed once, cached to `cache/stats_*.json`,

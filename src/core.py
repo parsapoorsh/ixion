@@ -7,7 +7,7 @@ browser, DFR head retraining, ONNX export, and the subcommand bodies that
 ``cli.py`` dispatches after parsing.
 
 Keeping the tools in one module lets them share a single checkpoint loader,
-stats decoder, and rotation-vote helper instead of each carrying a copy.
+stats decoder, and vote construction instead of each carrying a copy.
 """
 
 from __future__ import annotations
@@ -26,9 +26,10 @@ import time
 import warnings
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from multiprocessing.context import BaseContext
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 import matplotlib as mpl
 import numpy as np
@@ -44,13 +45,7 @@ from tqdm.auto import tqdm
 
 import constants
 from config import DatasetSpec, build_datasets
-from model import (
-    SAM,
-    ModelEMA,
-    RotationModel,
-    disable_running_stats,
-    enable_running_stats,
-)
+from model import SAM, ModelEMA, RotationModel
 from utils.image_io import open_rgb
 from utils.index import cache_fingerprint, index_files
 from utils.logsetup import setup_logging
@@ -70,67 +65,21 @@ WEIGHT_KEYS = {"ema": "ema", "raw": "model"}
 # Normalization stats
 # ---------------------------------------------------------------------------
 
-
-@dataclass(frozen=True)
-class NormStats:
-    mean: tuple[float, float, float]
-    std: tuple[float, float, float]
+MeanStd = tuple[tuple[float, float, float], tuple[float, float, float]]
 
 
-def stats_to_dict(stats: NormStats) -> dict[str, list[float]]:
-    return {"mean": list(stats.mean), "std": list(stats.std)}
+def stats_dict(
+    mean: tuple[float, float, float],
+    std: tuple[float, float, float],
+) -> dict[str, list[float]]:
+    return {"mean": list(mean), "std": list(std)}
 
 
-def stats_from_dict(raw: dict) -> NormStats:
-    return NormStats(
-        mean=tuple(raw["mean"]),  # type: ignore[arg-type]
-        std=tuple(raw["std"]),  # type: ignore[arg-type]
+def stats_from_dict(raw: dict) -> MeanStd:
+    return (
+        cast(tuple[float, float, float], tuple(raw["mean"])),
+        cast(tuple[float, float, float], tuple(raw["std"])),
     )
-
-
-def load_stats_cache(path: Path, fingerprint: str | None = None) -> NormStats | None:
-    if not path.exists():
-        raise FileNotFoundError(f"stats cache not found: {path}")
-    data = json.loads(path.read_text())
-    if fingerprint is not None and data.get("fingerprint") != fingerprint:
-        return None
-    return stats_from_dict(data)
-
-
-def save_stats_cache(
-    path: Path,
-    stats: NormStats,
-    fingerprint: str | None = None,
-) -> None:
-    payload: dict = stats_to_dict(stats)
-    if fingerprint is not None:
-        payload["fingerprint"] = fingerprint
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
-
-
-def stats_mp_context():
-    if sys.platform != "win32" and "fork" in mp.get_all_start_methods():
-        return mp.get_context("fork")
-    return mp.get_context()
-
-
-def preprocess_stats_image(path: Path) -> np.ndarray:
-    try:
-        image = open_rgb(
-            path,
-            preview_size=(constants.RESIZE_SIZE, constants.RESIZE_SIZE),
-        )
-        image = TF.resize(image, [constants.RESIZE_SIZE])
-        image = TF.center_crop(
-            image,
-            [constants.INPUT_SIZE, constants.INPUT_SIZE],
-        )
-        array = np.array(image, dtype=np.uint8, copy=True)
-        image.close()
-        return array
-    except (UnidentifiedImageError, OSError) as exc:
-        raise RuntimeError(f"unreadable image {path}: {exc}") from exc
 
 
 def compute_stats_chunk(paths: Sequence[Path]) -> tuple[np.ndarray, np.ndarray, int, int]:
@@ -145,7 +94,21 @@ def compute_stats_chunk(paths: Sequence[Path]) -> tuple[np.ndarray, np.ndarray, 
     total_pixels = 0
 
     for path in paths:
-        array = preprocess_stats_image(path)
+        try:
+            image = open_rgb(
+                path,
+                preview_size=(constants.RESIZE_SIZE, constants.RESIZE_SIZE),
+            )
+            image = TF.resize(image, [constants.RESIZE_SIZE])
+            image = TF.center_crop(
+                image,
+                [constants.INPUT_SIZE, constants.INPUT_SIZE],
+            )
+            array = np.array(image, dtype=np.uint8, copy=True)
+            image.close()
+        except (UnidentifiedImageError, OSError) as exc:
+            raise RuntimeError(f"unreadable image {path}: {exc}") from exc
+
         pixels = array.reshape(-1, 3).astype(np.uint64)
         sum_channels += pixels.sum(
             axis=0,
@@ -160,34 +123,25 @@ def compute_stats_chunk(paths: Sequence[Path]) -> tuple[np.ndarray, np.ndarray, 
     return sum_channels, sum_sq_channels, total_pixels, len(paths)
 
 
-def iter_path_chunks(
-    files: Sequence[Path],
-    sample_indices: Sequence[int] | None,
-    chunk_size: int,
-) -> Iterable[list[Path]]:
-    if sample_indices is None:
-        total = len(files)
-        for start in range(0, total, chunk_size):
-            stop = min(total, start + chunk_size)
-            yield [files[idx] for idx in range(start, stop)]
-        return
-
-    total = len(sample_indices)
-    for start in range(0, total, chunk_size):
-        stop = min(total, start + chunk_size)
-        yield [files[sample_indices[idx]] for idx in range(start, stop)]
-
-
-def iter_parallel_results(
+def iter_stats_results(
     chunks: Iterable[list[Path]],
     worker_count: int,
     prefetch_factor: int,
 ) -> Iterable[tuple[np.ndarray, np.ndarray, int, int]]:
+    if worker_count <= 1:
+        for chunk in chunks:
+            yield compute_stats_chunk(chunk)
+        return
+
     max_pending = max(
         worker_count,
         worker_count * max(1, prefetch_factor),
     )
-    context = stats_mp_context()
+    context: BaseContext
+    if sys.platform != "win32" and "fork" in mp.get_all_start_methods():
+        context = mp.get_context("fork")
+    else:
+        context = mp.get_context()
 
     with ProcessPoolExecutor(
         max_workers=worker_count,
@@ -217,23 +171,6 @@ def iter_parallel_results(
                 yield future.result()
 
 
-def iter_stats_results(
-    chunks: Iterable[list[Path]],
-    worker_count: int,
-    prefetch_factor: int,
-) -> Iterable[tuple[np.ndarray, np.ndarray, int, int]]:
-    if worker_count <= 1:
-        for chunk in chunks:
-            yield compute_stats_chunk(chunk)
-        return
-
-    yield from iter_parallel_results(
-        chunks=chunks,
-        worker_count=worker_count,
-        prefetch_factor=prefetch_factor,
-    )
-
-
 def compute_stats(
     files: Sequence[Path],
     device: torch.device,
@@ -244,11 +181,11 @@ def compute_stats(
     cache_path: Path | None = None,
     invalidate_cache: bool = False,
     fingerprint: str | None = None,
-) -> NormStats:
+) -> MeanStd:
     if cache_path is not None and cache_path.exists() and not invalidate_cache:
-        cached = load_stats_cache(cache_path, fingerprint)
-        if cached is not None:
-            return cached
+        cached = json.loads(cache_path.read_text())
+        if fingerprint is None or cached.get("fingerprint") == fingerprint:
+            return stats_from_dict(cached)
         logger.info("stats cache %s does not match configuration; recomputing", cache_path)
 
     sample_total = len(files) if sample_indices is None else len(sample_indices)
@@ -272,11 +209,16 @@ def compute_stats(
     sum_sq_channels = np.zeros(3, dtype=np.float64)
     total_pixels = 0
 
-    chunks = iter_path_chunks(
-        files=files,
-        sample_indices=sample_indices,
-        chunk_size=chunk_size,
-    )
+    if sample_indices is None:
+        chunks: Iterable[list[Path]] = (
+            list(files[start:start + chunk_size])
+            for start in range(0, len(files), chunk_size)
+        )
+    else:
+        chunks = (
+            [files[idx] for idx in sample_indices[start:start + chunk_size]]
+            for start in range(0, len(sample_indices), chunk_size)
+        )
     results = iter_stats_results(
         chunks=chunks,
         worker_count=worker_count,
@@ -302,16 +244,20 @@ def compute_stats(
         raise RuntimeError("no images decoded; cannot compute stats")
 
     scale = 255.0
-    mean = sum_channels / (total_pixels * scale)
-    variance = (sum_sq_channels / (total_pixels * scale * scale)) - mean * mean
-    std = np.sqrt(np.clip(variance, 0.0, None))
-    stats = NormStats(
-        mean=tuple(mean.tolist()),  # type: ignore[arg-type]
-        std=tuple(std.tolist()),  # type: ignore[arg-type]
+    mean_arr = sum_channels / (total_pixels * scale)
+    variance = (sum_sq_channels / (total_pixels * scale * scale)) - mean_arr * mean_arr
+    std_arr = np.sqrt(np.clip(variance, 0.0, None))
+    mean_std: MeanStd = (
+        cast(tuple[float, float, float], tuple(mean_arr.tolist())),
+        cast(tuple[float, float, float], tuple(std_arr.tolist())),
     )
     if cache_path is not None:
-        save_stats_cache(cache_path, stats, fingerprint)
-    return stats
+        payload: dict = stats_dict(*mean_std)
+        if fingerprint is not None:
+            payload["fingerprint"] = fingerprint
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(payload))
+    return mean_std
 
 
 # ---------------------------------------------------------------------------
@@ -418,19 +364,6 @@ class ImageLoader(Dataset):
         return img
 
 
-def load_base_image(base: ImageLoader, img_idx: int) -> Image.Image:
-    """Load ``base[img_idx]``, failing loudly on unreadable files.
-
-    Substituting a neighbouring image (the old wrap-around behaviour)
-    silently duplicated samples and skewed validation metrics, so corrupt
-    files now surface as errors instead.
-    """
-    try:
-        return base[img_idx]  # type: ignore[return-value]
-    except (UnidentifiedImageError, OSError) as exc:
-        raise RuntimeError(f"unreadable image {base.files[img_idx]}: {exc}") from exc
-
-
 class RotationPairDataset(Dataset):
     """Wraps a base image source so each item is (image, is_upright_label).
 
@@ -448,7 +381,12 @@ class RotationPairDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, float]:
         img_idx, rot_idx = divmod(idx, len(constants.ROTATIONS))
-        img = load_base_image(self.base, img_idx)
+        # Fail loudly on unreadable files: wrapping around (the previous
+        # behaviour) duplicated samples and skewed validation metrics.
+        try:
+            img = self.base[img_idx]
+        except (UnidentifiedImageError, OSError) as exc:
+            raise RuntimeError(f"unreadable image {self.base.files[img_idx]}: {exc}") from exc
         tensor = self.transform(img)
         if rot_idx != 0:
             tensor = TF.rotate(
@@ -461,42 +399,6 @@ class RotationPairDataset(Dataset):
         return tensor, prob
 
 
-class RotationGroupDataset(Dataset):
-    """One item = all four rotations of a single base image.
-
-    Transform runs once (shared crop / jitter / erase), then each view is
-    produced with ``TF.rotate`` - same geometry as pair training and infer.
-    Returns a ``(4, C, H, W)`` tensor ordered as ``constants.ROTATIONS``;
-    upright is index 0 for group cross-entropy.
-    """
-
-    def __init__(self, base: ImageLoader, transform: Callable) -> None:
-        self.base = base
-        self.transform = transform
-
-    def __len__(self) -> int:
-        return len(self.base)
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        img = load_base_image(self.base, idx)
-        tensor = self.transform(img)
-        views: list[torch.Tensor] = []
-        for rot_idx, deg in enumerate(constants.ROTATIONS):
-            if rot_idx == 0:
-                views.append(tensor)
-            else:
-                views.append(TF.rotate(tensor, deg, expand=True))
-        return torch.stack(views, dim=0)
-
-
-def sample_stats_indices(files: Sequence[Path], sample_count: int) -> list[int] | None:
-    """Return the seeded subset used to estimate per-channel mean/std."""
-    if sample_count >= len(files):
-        return None
-    rng = random.Random(constants.STATS_SAMPLE_SEED)
-    return sorted(rng.sample(range(len(files)), sample_count))
-
-
 def build_dataset(
     split: Literal["train", "val"],
     datasets: Sequence[DatasetSpec],
@@ -504,12 +406,12 @@ def build_dataset(
     num_workers: int,
     batch_size: int,
     prefetch_factor: int,
-    stats: NormStats | None = None,
+    mean_std: MeanStd | None = None,
     invalidate_cache: bool = False,
     erasing_p: float = 0.25,
     crop_policy: str = "random",
-) -> tuple[RotationPairDataset, NormStats]:
-    roots = [root for ds in datasets for root in (ds.train if split == "train" else ds.val)]
+) -> tuple[RotationPairDataset, MeanStd]:
+    roots = [root for ds in datasets for root in (ds["train"] if split == "train" else ds["val"])]
     files = index_files(
         name=split,
         roots=roots,
@@ -517,7 +419,7 @@ def build_dataset(
         invalidate_cache=invalidate_cache,
     )
 
-    if stats is None:
+    if mean_std is None:
         stats_cache = constants.INDEX_CACHE_DIR / f"stats_{split}.json"
         stats_fingerprint = cache_fingerprint(
             "stats",
@@ -531,39 +433,45 @@ def build_dataset(
             len(files),
             max(1, int(len(files) * constants.STATS_SAMPLE_FRACTION)),
         )
+        if sample_count >= len(files):
+            sample_indices = None
+        else:
+            rng = random.Random(constants.STATS_SAMPLE_SEED)
+            sample_indices = sorted(rng.sample(range(len(files)), sample_count))
         logger.info(
             "computing dataset stats for %s split on %d/%d files",
             split,
             sample_count,
             len(files),
         )
-        stats = compute_stats(
+        mean_std = compute_stats(
             files=files,
             device=device,
             num_workers=num_workers,
             batch_size=batch_size,
             prefetch_factor=prefetch_factor,
-            sample_indices=sample_stats_indices(files, sample_count),
+            sample_indices=sample_indices,
             cache_path=stats_cache,
             invalidate_cache=invalidate_cache,
             fingerprint=stats_fingerprint,
         )
-        logger.info("stats - mean: %s | std: %s", stats.mean, stats.std)
+        logger.info("stats - mean: %s | std: %s", *mean_std)
 
+    mean, std = mean_std
     transform = (
         build_train_transform(
-            mean=stats.mean,
-            std=stats.std,
+            mean=mean,
+            std=std,
             erasing_p=erasing_p,
             crop_policy=crop_policy,
         )
         if split == "train"
-        else build_eval_transform(mean=stats.mean, std=stats.std)
+        else build_eval_transform(mean=mean, std=std)
     )
     return RotationPairDataset(
         base=ImageLoader(files=files),
         transform=transform,
-    ), stats
+    ), mean_std
 
 
 def build_loader(
@@ -590,28 +498,12 @@ def build_loader(
 # ---------------------------------------------------------------------------
 
 
-def load_checkpoint_stats(payload: dict, strict: bool = False) -> NormStats:
-    """Read mean/std from a checkpoint, falling back to the cached train stats."""
-    raw_stats = payload.get("stats")
-    if raw_stats:
-        return stats_from_dict(raw_stats)
-    if strict:
-        raise KeyError("checkpoint has no 'stats'; DFR needs the normalization the backbone was trained with")
-
-    cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
-    cached = load_stats_cache(cache_file)
-    if cached is None:
-        raise RuntimeError(f"stats cache has no matching fingerprint: {cache_file}")
-    logger.info("loaded stats from cache file %s", cache_file)
-    return cached
-
-
 def load_checkpoint_model(
     checkpoint: Path,
     device: torch.device,
     weights: str = "ema",
     strict_stats: bool = False,
-) -> tuple[dict, RotationModel, NormStats]:
+) -> tuple[dict, RotationModel, MeanStd]:
     """Load one weight set and the normalization stats from a checkpoint.
 
     ``weights`` picks the EMA shadow ("ema", production) or the raw training
@@ -622,14 +514,25 @@ def load_checkpoint_model(
     if state_key not in payload:
         raise KeyError(f"checkpoint missing '{state_key}' state dict; keys={list(payload)}")
 
-    stats = load_checkpoint_stats(payload, strict=strict_stats)
+    raw_stats = payload.get("stats")
+    if raw_stats:
+        mean_std = stats_from_dict(raw_stats)
+    elif strict_stats:
+        raise KeyError("checkpoint has no 'stats'; DFR needs the normalization the backbone was trained with")
+    else:
+        cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
+        if not cache_file.exists():
+            raise RuntimeError(f"stats cache not found: {cache_file}")
+        mean_std = stats_from_dict(json.loads(cache_file.read_text()))
+        logger.info("loaded stats from cache file %s", cache_file)
+
     model = RotationModel(
         pretrained=False,
         pooling=payload.get("pooling", "avg"),
     ).to(device)
     model.load_state_dict(payload[state_key])
     model.eval()
-    return payload, model, stats
+    return payload, model, mean_std
 
 
 def save_payload(path: Path, payload: dict) -> None:
@@ -640,14 +543,15 @@ def save_payload(path: Path, payload: dict) -> None:
 def checkpoint_payload(
     model_state: dict,
     ema_state: dict,
-    stats: NormStats,
+    mean: tuple[float, float, float],
+    std: tuple[float, float, float],
     extras: dict | None = None,
 ) -> dict:
     """Assemble the on-disk checkpoint dict shared by training and DFR."""
     payload: dict = {
         "model": model_state,
         "ema": ema_state,
-        "stats": stats_to_dict(stats),
+        "stats": stats_dict(mean, std),
     }
     if extras:
         payload.update(extras)
@@ -659,8 +563,7 @@ def checkpoint_payload(
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class RotationVote:
+class RotationVote(TypedDict):
     """Per-rotation upright probabilities and derived product fields.
 
     `probs` maps each rotation in degrees (0/90/180/270) to its four-view
@@ -684,17 +587,6 @@ class RotationVote:
     margin: float
     angle: float
 
-    def should_abstain(self, threshold: float) -> bool:
-        """True when top-1 vs top-2 margin is below *threshold*."""
-        return self.margin < threshold
-
-
-def softmax_np(values: Sequence[float] | np.ndarray) -> np.ndarray:
-    arr = np.asarray(values, dtype=np.float64)
-    arr = arr - arr.max()
-    exp = np.exp(arr)
-    return exp / exp.sum()
-
 
 def circular_mean_angle(probs: Sequence[float] | np.ndarray) -> float:
     """Weighted circular mean of the four rotation angles, in degrees."""
@@ -713,49 +605,6 @@ def stack_rotation_views(base: torch.Tensor, device: torch.device) -> torch.Tens
     """
     views = [TF.rotate(base, deg, expand=False) for deg in constants.ROTATIONS]
     return torch.stack(views).to(device, non_blocking=True)
-
-
-def vote_from_probs(probs: np.ndarray) -> RotationVote:
-    order = np.argsort(probs)
-    top1_i = int(order[-1])
-    top2_i = int(order[-2]) if len(order) > 1 else top1_i
-    best_deg = int(constants.ROTATIONS[top1_i])
-    margin = float(probs[top1_i] - probs[top2_i])
-    probs_by_deg = {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)}
-
-    return RotationVote(
-        probs=probs_by_deg,
-        normalized_probs=dict(probs_by_deg),
-        best_deg=best_deg,
-        margin=margin,
-        angle=circular_mean_angle(probs),
-    )
-
-
-@torch.no_grad()
-def predict_upright_score(
-    model: nn.Module,
-    img: Image.Image,
-    device: torch.device,
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
-) -> float:
-    """Return the raw sigmoid upright score for a single view.
-
-    This score is not calibrated by the four-view group cross-entropy
-    objective; prefer ``predict_rotations`` for product decisions.
-    """
-    transform = build_eval_transform(
-        mean=mean,
-        std=std,
-    )
-    tensor = transform(img).unsqueeze(0).to(device, non_blocking=True)
-
-    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        logit = model(tensor)
-    prob = float(logit.float().sigmoid().item())
-
-    return prob
 
 
 @torch.no_grad()
@@ -783,7 +632,17 @@ def predict_rotations(
         logits = model(batch)
     probs = logits.float().softmax(dim=0).reshape(-1).cpu().numpy()
 
-    return vote_from_probs(probs)
+    order = np.argsort(probs)
+    top1_i = int(order[-1])
+    top2_i = int(order[-2]) if len(order) > 1 else top1_i
+    probs_by_deg = {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)}
+    return {
+        "probs": probs_by_deg,
+        "normalized_probs": dict(probs_by_deg),
+        "best_deg": int(constants.ROTATIONS[top1_i]),
+        "margin": float(probs[top1_i] - probs[top2_i]),
+        "angle": circular_mean_angle(probs),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -825,31 +684,30 @@ class EpochStats:
     def avg_grad_norm(self) -> float:
         return self.grad_norm_sum / max(1, self.grad_steps)
 
-
-def merge_buffers(
-    stats: EpochStats,
-    loss_buf: torch.Tensor,
-    correct_buf: torch.Tensor,
-    grad_norm_buf: torch.Tensor,
-    n: int,
-    steps: int,
-) -> tuple[float, float, float]:
-    """Flush the GPU-side accumulators into *stats*; return window means."""
-    loss_sum = loss_buf.item()
-    correct = int(correct_buf.item())
-    grad_norm_sum = grad_norm_buf.item()
-    stats.merge(
-        loss_sum=loss_sum,
-        correct=correct,
-        grad_norm_sum=grad_norm_sum,
-        n=n,
-        steps=steps,
-    )
-    return (
-        loss_sum / max(1, n),
-        correct / max(1, n),
-        grad_norm_sum / max(1, steps),
-    )
+    def merge_buffers(
+        self,
+        loss_buf: torch.Tensor,
+        correct_buf: torch.Tensor,
+        grad_norm_buf: torch.Tensor,
+        n: int,
+        steps: int,
+    ) -> tuple[float, float, float]:
+        """Flush the GPU-side accumulators into these stats; return window means."""
+        loss_sum = loss_buf.item()
+        correct = int(correct_buf.item())
+        grad_norm_sum = grad_norm_buf.item()
+        self.merge(
+            loss_sum=loss_sum,
+            correct=correct,
+            grad_norm_sum=grad_norm_sum,
+            n=n,
+            steps=steps,
+        )
+        return (
+            loss_sum / max(1, n),
+            correct / max(1, n),
+            grad_norm_sum / max(1, steps),
+        )
 
 
 def move_batch(
@@ -873,7 +731,8 @@ def save_checkpoint(
     model: nn.Module,
     ema: ModelEMA,
     optimizer: torch.optim.Optimizer,
-    stats: NormStats,
+    mean: tuple[float, float, float],
+    std: tuple[float, float, float],
     extras: dict | None = None,
 ) -> None:
     # torch.compile() wraps the module and prefixes state_dict keys with
@@ -885,7 +744,8 @@ def save_checkpoint(
     payload = checkpoint_payload(
         raw_model.state_dict(),
         ema.state_dict(),
-        stats,
+        mean,
+        std,
         extras={
             "ema_step": ema.step,
             "optimizer": base_optimizer.state_dict(),
@@ -929,20 +789,13 @@ def can_compile_model() -> tuple[bool, str | None]:
     return True, None
 
 
-def autocast_dtype(device: torch.device) -> torch.dtype:
-    # bfloat16 needs Ampere+ tensor cores. Older GPUs (e.g. Turing GTX 16xx)
-    # emulate it, which also breaks torch.compile's layout propagation, so
-    # fall back to fp32 there.
-    capability = torch.cuda.get_device_capability(device)
-    return torch.bfloat16 if capability[0] >= 8 else torch.float32
-
-
 def train(
     device: torch.device,
     train_loader: DataLoader,
     checkpoint_dir: Path,
     seed: int,
-    stats: NormStats,
+    mean: tuple[float, float, float],
+    std: tuple[float, float, float],
     epochs: int,
     lr: float,
     weight_decay: float,
@@ -968,7 +821,11 @@ def train(
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
-    autocast = autocast_dtype(device)
+    # bfloat16 needs Ampere+ tensor cores. Older GPUs (e.g. Turing GTX 16xx)
+    # emulate it, which also breaks torch.compile's layout propagation, so
+    # fall back to fp32 there.
+    capability = torch.cuda.get_device_capability(device)
+    autocast_dtype = torch.bfloat16 if capability[0] >= 8 else torch.float32
 
     # Peek at the checkpoint before building the model so resumes honour the
     # pooling variant it was trained with (attention vs global average).
@@ -1140,7 +997,7 @@ def train(
             for group in optimizer.param_groups:
                 group["lr"] = lr * scale * group.get("lr_scale", 1.0)
 
-            with torch.autocast(device_type=device.type, dtype=autocast):  # pyright: ignore[reportPrivateImportUsage]
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype):  # pyright: ignore[reportPrivateImportUsage]
                 logits = model(imgs)
                 loss = loss_fn(logits, labels)
 
@@ -1151,8 +1008,8 @@ def train(
                 # First pass climbs to the worst-case point; the second pass
                 # recomputes the gradient there and applies the real update.
                 sam_optimizer.first_step(zero_grad=True)
-                disable_running_stats(model)
-                with torch.autocast(device_type=device.type, dtype=autocast):
+                sam_optimizer.disable_running_stats(model)
+                with torch.autocast(device_type=device.type, dtype=autocast_dtype):
                     loss_adv = loss_fn(model(imgs), labels)
                 loss_adv.backward()
 
@@ -1162,7 +1019,7 @@ def train(
             )
             if sam_optimizer is not None:
                 sam_optimizer.second_step(zero_grad=True)
-                enable_running_stats(model)
+                sam_optimizer.enable_running_stats(model)
             else:
                 optimizer.step()
             ema.update(model)
@@ -1176,8 +1033,7 @@ def train(
             pending_steps += 1
 
             if global_step % constants.LOG_STEP == 0:
-                window_loss, window_acc, window_gn = merge_buffers(
-                    epoch_stats,
+                window_loss, window_acc, window_gn = epoch_stats.merge_buffers(
                     loss_buf,
                     correct_buf,
                     gn_buf,
@@ -1210,8 +1066,7 @@ def train(
             global_step += 1
 
         if pending_steps > 0:
-            merge_buffers(
-                epoch_stats,
+            epoch_stats.merge_buffers(
                 loss_buf,
                 correct_buf,
                 gn_buf,
@@ -1233,7 +1088,8 @@ def train(
             model,
             ema,
             optimizer,
-            stats,
+            mean,
+            std,
             extras={
                 "epoch": epoch,
                 "schedule_total_steps": total_steps,
@@ -1250,27 +1106,6 @@ def train(
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
-
-
-def log_coverage_curve(margins: list[float], corrects: list[bool]) -> None:
-    """Log accuracy and coverage at fixed abstention thresholds."""
-    margin_t = torch.tensor(margins, dtype=torch.float64)
-    ok_t = torch.tensor(corrects, dtype=torch.bool)
-    total = len(margins)
-    logger.info("margin threshold -> coverage / accuracy:")
-    for threshold in (0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50):
-        kept = margin_t >= threshold
-        n = int(kept.sum())
-        if n == 0:
-            continue
-        acc = float(ok_t[kept].float().mean())
-        logger.info(
-            "  margin>=%.2f  coverage=%.3f  acc=%.4f  (n=%d)",
-            threshold,
-            n / total,
-            acc,
-            n,
-        )
 
 
 @torch.no_grad()
@@ -1353,7 +1188,22 @@ def run_validation(
         )
 
     if margins:
-        log_coverage_curve(margins, corrects)
+        margin_t = torch.tensor(margins, dtype=torch.float64)
+        ok_t = torch.tensor(corrects, dtype=torch.bool)
+        logger.info("margin threshold -> coverage / accuracy:")
+        for threshold in (0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50):
+            kept = margin_t >= threshold
+            n = int(kept.sum())
+            if n == 0:
+                continue
+            acc = float(ok_t[kept].float().mean())
+            logger.info(
+                "  margin>=%.2f  coverage=%.3f  acc=%.4f  (n=%d)",
+                threshold,
+                n / len(margins),
+                acc,
+                n,
+            )
 
     loss = total_loss / max(1, group4_total)
     group4_acc = group4_correct / max(1, group4_total)
@@ -1385,7 +1235,7 @@ def validate_checkpoint(
     checkpoint to load. Helpful for separating "EMA shadow is bad" from
     "validator code is bad".
     """
-    payload, model, stats = load_checkpoint_model(
+    payload, model, (mean, std) = load_checkpoint_model(
         checkpoint_path,
         device,
         weights=which_weights,
@@ -1405,7 +1255,7 @@ def validate_checkpoint(
         num_workers=num_workers,
         batch_size=batch_size,
         prefetch_factor=prefetch_factor,
-        stats=stats,
+        mean_std=(mean, std),
     )
     val_loader = build_loader(
         val_ds,
@@ -1454,68 +1304,6 @@ def validate_checkpoint(
 # ---------------------------------------------------------------------------
 # Deep Feature Reweighting (DFR)
 # ---------------------------------------------------------------------------
-
-
-def freeze_backbone(model: RotationModel, reinit_head: bool) -> None:
-    """Freeze the backbone and pooling layer; optionally reinitialise the head.
-
-    True DFR refits the classifier from scratch on the reweighting data, so
-    ``reinit_head`` defaults on. Everything outside ``model.head`` is frozen
-    (backbone + pooling layer, if it has parameters) and the backbone is put
-    in eval mode so its BatchNorm running stats stay fixed at the values the
-    full model converged to.
-    """
-    for p in model.backbone.parameters():
-        p.requires_grad_(False)
-    for p in model.pool.parameters():
-        p.requires_grad_(False)
-    model.backbone.eval()
-
-    if reinit_head:
-        for module in model.head.modules():
-            if hasattr(module, "reset_parameters"):
-                module.reset_parameters()  # type: ignore[operator]
-        logger.info("reinitialised head for a fresh DFR fit")
-
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    logger.info("trainable params: %d | frozen params: %d", trainable, frozen)
-
-
-def build_head_loader(
-    data_roots: list[Path],
-    stats: NormStats,
-    device: torch.device,
-    batch_size: int,
-    num_workers: int,
-    prefetch_factor: int,
-    invalidate_cache: bool,
-) -> DataLoader:
-    """Index the reweighting roots and wrap them as a rotation-pair loader.
-
-    Indexed under its own cache name so it never collides with the main
-    train/val file indexes.
-    """
-    files = index_files(
-        name="dfr",
-        roots=data_roots,
-        cache_dir=constants.INDEX_CACHE_DIR,
-        invalidate_cache=invalidate_cache,
-    )
-    transform = build_train_transform(mean=stats.mean, std=stats.std)
-    dataset = RotationPairDataset(
-        base=ImageLoader(files=files),
-        transform=transform,
-    )
-    logger.info("DFR reweighting set: %d files -> %d pairs", len(files), len(dataset))
-    return build_loader(
-        dataset,
-        device=device,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        shuffle=True,
-    )
 
 
 def retrain_head(
@@ -1587,214 +1375,194 @@ def retrain_head(
         )
 
 
-def save_dfr_checkpoint(
-    path: Path,
-    model: RotationModel,
-    stats: NormStats,
-    source_checkpoint: Path,
-) -> None:
-    """Save the DFR-retrained model in the format validator.py expects.
-
-    The retrained weights go into both ``model`` and ``ema`` so validating
-    with either ``--weights ema`` or ``--weights raw`` picks them up.
-    """
-    state = model.state_dict()
-    payload = checkpoint_payload(
-        state,
-        state,
-        stats,
-        extras={
-            "epoch": "dfr",
-            "pooling": model.pooling,
-            "dfr_source": str(source_checkpoint),
-        },
-    )
-    save_payload(path, payload)
-    logger.info("saved DFR checkpoint %s", path)
-
-
 # ---------------------------------------------------------------------------
 # GradCAM
 # ---------------------------------------------------------------------------
 
 
-def compute_gradcam_batch(
-    model: RotationModel,
-    tensor: torch.Tensor,
-) -> tuple[list[np.ndarray], list[float]]:
-    """Run one forward+backward for a batched tensor and return per-sample
-    GradCAM heatmaps (each in [0, 1]) plus per-sample upright logits."""
-    target_layer: nn.Module = model.backbone.conv_head  # type: ignore[assignment]
+class GradCAM:
+    """GradCAM and guided-GradCAM rendering for one loaded model."""
 
-    saved_features: list[torch.Tensor] = []
-    saved_grads: list[torch.Tensor] = []
-
-    def fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
-        saved_features.append(out)
-
-    def bwd(_m: nn.Module, _gin: object, gout: tuple[torch.Tensor, ...]) -> None:
-        saved_grads.append(gout[0])
-
-    fh = target_layer.register_forward_hook(fwd)
-    bh = target_layer.register_full_backward_hook(bwd)  # type: ignore[arg-type]
-
-    output = model(tensor)  # (B,) or (B, 1)
-    model.zero_grad()
-    output.sum().backward()  # per-sample grads are independent
-
-    fh.remove()
-    bh.remove()
-
-    feat = saved_features[0]  # (B, C, H, W)
-    grad = saved_grads[0]  # (B, C, H, W)
-    weights = grad.mean(dim=(2, 3), keepdim=True)
-    cam = nn.functional.relu((weights * feat).sum(dim=1))  # (B, H, W)
-    cam_max = cam.amax(dim=(1, 2), keepdim=True).clamp(min=1e-8)
-    cam_np = (cam / cam_max).cpu().detach().float().numpy()
-
-    logits = output.detach().cpu().float().reshape(-1).tolist()
-    return [cam_np[i] for i in range(cam_np.shape[0])], logits
-
-
-def make_overlay(
-    pil_img: Image.Image,
-    cam: np.ndarray,
-    alpha: float = 0.65,
-    colormap: str = "jet",
-) -> Image.Image:
-    cam = np.sqrt(cam)  # spread activation - avoids tiny concentrated hot spots
-    heatmap = mpl.colormaps[colormap](cam)[:, :, :3]
-    heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(pil_img.size, Image.Resampling.BICUBIC)
-    blended = np.array(pil_img, dtype=np.float32) * (1 - alpha) + np.array(heatmap_pil, dtype=np.float32) * alpha
-    return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
-
-
-def compute_guided_gradcam_batch(
-    model: RotationModel,
-    tensor: torch.Tensor,
-    cams: list[np.ndarray],
-) -> list[np.ndarray]:
-    """Guided backprop gated by the supplied GradCAM heatmaps.
-
-    Produces sharp, class-discriminative, edge-like maps at full input
-    resolution. SiLU stand-in for ReLU in the guided-BP gate: only pass
-    gradient where the SiLU output was positive AND the incoming gradient
-    is positive. Runs a single batched forward+backward over the batch.
-    """
-    silu_outputs: dict[int, torch.Tensor] = {}
-    handles: list[torch.utils.hooks.RemovableHandle] = []
-
-    def make_fwd(idx: int):
-        def fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
-            silu_outputs[idx] = out
-
-        return fwd
-
-    def make_bwd(idx: int):
-        def bwd(
-            _m: nn.Module,
-            _gin: object,
-            gout: tuple[torch.Tensor, ...],
-        ) -> tuple[torch.Tensor, ...]:
-            out = silu_outputs[idx]
-            new_grad = gout[0].clone()
-            new_grad[out <= 0] = 0
-            new_grad[new_grad < 0] = 0
-            return (new_grad,)
-
-        return bwd
-
-    silu_modules = [m for m in model.modules() if isinstance(m, nn.SiLU)]
-    original_inplace = [sm.inplace for sm in silu_modules]
-    for sm in silu_modules:
-        sm.inplace = False  # backward hooks reject view+inplace combo
-    for i, sm in enumerate(silu_modules):
-        handles.append(sm.register_forward_hook(make_fwd(i)))
-        handles.append(sm.register_full_backward_hook(make_bwd(i)))  # type: ignore[arg-type]
-
-    try:
-        x = tensor.detach().clone().requires_grad_(True)
-        output = model(x)
-        model.zero_grad()
-        output.sum().backward()
-    finally:
-        for h in handles:
-            h.remove()
-        for sm, was_inplace in zip(silu_modules, original_inplace, strict=True):
-            sm.inplace = was_inplace
-
-    grad = x.grad.abs().sum(dim=1)  # type: ignore[union-attr]  # (B, H, W)
-    grad_np = grad.cpu().detach().float().numpy()
-
-    guided_out: list[np.ndarray] = []
-    for i, cam in enumerate(cams):
-        h_in, w_in = grad_np[i].shape
-        cam_up = (
-            np.array(
-                Image.fromarray((cam * 255).astype(np.uint8)).resize((w_in, h_in), Image.Resampling.BICUBIC),
-            ).astype(np.float32)
-            / 255.0
+    def __init__(
+        self,
+        model: RotationModel,
+        device: torch.device,
+        mean: tuple[float, float, float],
+        std: tuple[float, float, float],
+    ) -> None:
+        self.model = model
+        self.device = device
+        self.preprocess = build_eval_transform(mean=mean, std=std)
+        self.crop = T.Compose(
+            [
+                T.Resize(constants.RESIZE_SIZE),
+                T.CenterCrop(constants.INPUT_SIZE),
+            ]
         )
 
-        guided = grad_np[i] * cam_up
-        p99 = float(np.percentile(guided, 99))
-        if p99 > 0:
-            guided = np.clip(guided / p99, 0.0, 1.0)
-        guided_out.append(guided)
-    return guided_out
+    def compute(self, tensor: torch.Tensor) -> tuple[list[np.ndarray], list[float]]:
+        """Run one forward+backward and return per-sample GradCAM heatmaps
+        (each in [0, 1]) plus per-sample upright logits."""
+        target_layer: nn.Module = self.model.backbone.conv_head  # type: ignore[assignment]
 
+        saved_features: list[torch.Tensor] = []
+        saved_grads: list[torch.Tensor] = []
 
-def visualise_grid(
-    displays: list[Image.Image],
-    probs: list[float],
-    heatmaps: list[np.ndarray],
-    title: str,
-    out_path: Path,
-    colormap: str = "jet",
-) -> None:
-    """Render a 2x2 rotation grid with `heatmaps[i]` overlaid on `displays[i]`."""
-    pred = int(np.argmax(probs))
+        def fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
+            saved_features.append(out)
 
-    fig = Figure(figsize=(10, 10))
-    axes = fig.subplots(2, 2)
+        def bwd(_m: nn.Module, _gin: object, gout: tuple[torch.Tensor, ...]) -> None:
+            saved_grads.append(gout[0])
 
-    for idx, (angle, heat, prob, disp) in enumerate(zip(constants.ROTATIONS, heatmaps, probs, displays, strict=True)):
-        img_overlay = make_overlay(disp, heat, colormap=colormap)
-        ax = axes[idx // 2, idx % 2]
-        marker = " *" if idx == pred else ""
-        ax.imshow(img_overlay)
-        ax.set_title(f"{angle}°{marker}  softmax={prob:.0%}", fontsize=11)
-        ax.axis("off")
+        fh = target_layer.register_forward_hook(fwd)
+        bh = target_layer.register_full_backward_hook(bwd)  # type: ignore[arg-type]
 
-    fig.suptitle(title, fontsize=11)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        output = self.model(tensor)  # (B,) or (B, 1)
+        self.model.zero_grad()
+        output.sum().backward()  # per-sample grads are independent
 
+        fh.remove()
+        bh.remove()
 
-def compute_rotations(
-    model: RotationModel,
-    pil_img: Image.Image,
-    preprocess: T.Compose,
-    device: torch.device,
-) -> tuple[list[Image.Image], list[float], list[np.ndarray], torch.Tensor]:
-    # Display images: resize + center-crop, then PIL-rotate each view.
-    crop = T.Compose(
-        [
-            T.Resize(constants.RESIZE_SIZE),
-            T.CenterCrop(constants.INPUT_SIZE),
-        ]
-    )(pil_img)
-    displays = [crop.rotate(a) if a != 0 else crop for a in constants.ROTATIONS]
+        feat = saved_features[0]  # (B, C, H, W)
+        grad = saved_grads[0]  # (B, C, H, W)
+        weights = grad.mean(dim=(2, 3), keepdim=True)
+        cam = nn.functional.relu((weights * feat).sum(dim=1))  # (B, H, W)
+        cam_max = cam.amax(dim=(1, 2), keepdim=True).clamp(min=1e-8)
+        cam_np = (cam / cam_max).cpu().detach().float().numpy()
 
-    # Model input: transform once (resize/crop/to_tensor/normalize), then
-    # rotate the tensor - same geometry as train/infer (RotationPairDataset,
-    # infer.predict_rotations), not PIL-rotate-then-transform.
-    base = preprocess(pil_img)
-    tensors = stack_rotation_views(base, device)
+        logits = output.detach().cpu().float().reshape(-1).tolist()
+        return [cam_np[i] for i in range(cam_np.shape[0])], logits
 
-    cams, logits = compute_gradcam_batch(model, tensors)
-    probs = softmax_np(logits).tolist()
-    return displays, probs, cams, tensors
+    def guided(self, tensor: torch.Tensor, cams: list[np.ndarray]) -> list[np.ndarray]:
+        """Guided backprop gated by the supplied GradCAM heatmaps.
+
+        Produces sharp, class-discriminative, edge-like maps at full input
+        resolution. SiLU stand-in for ReLU in the guided-BP gate: only pass
+        gradient where the SiLU output was positive AND the incoming gradient
+        is positive. Runs a single batched forward+backward over the batch.
+        """
+        silu_outputs: dict[int, torch.Tensor] = {}
+        handles: list[torch.utils.hooks.RemovableHandle] = []
+
+        def make_fwd(idx: int):
+            def fwd(_m: nn.Module, _inp: object, out: torch.Tensor) -> None:
+                silu_outputs[idx] = out
+
+            return fwd
+
+        def make_bwd(idx: int):
+            def bwd(
+                _m: nn.Module,
+                _gin: object,
+                gout: tuple[torch.Tensor, ...],
+            ) -> tuple[torch.Tensor, ...]:
+                out = silu_outputs[idx]
+                new_grad = gout[0].clone()
+                new_grad[out <= 0] = 0
+                new_grad[new_grad < 0] = 0
+                return (new_grad,)
+
+            return bwd
+
+        silu_modules = [m for m in self.model.modules() if isinstance(m, nn.SiLU)]
+        original_inplace = [sm.inplace for sm in silu_modules]
+        for sm in silu_modules:
+            sm.inplace = False  # backward hooks reject view+inplace combo
+        for i, sm in enumerate(silu_modules):
+            handles.append(sm.register_forward_hook(make_fwd(i)))
+            handles.append(sm.register_full_backward_hook(make_bwd(i)))  # type: ignore[arg-type]
+
+        try:
+            x = tensor.detach().clone().requires_grad_(True)
+            output = self.model(x)
+            self.model.zero_grad()
+            output.sum().backward()
+        finally:
+            for h in handles:
+                h.remove()
+            for sm, was_inplace in zip(silu_modules, original_inplace, strict=True):
+                sm.inplace = was_inplace
+
+        grad = x.grad.abs().sum(dim=1)  # type: ignore[union-attr]  # (B, H, W)
+        grad_np = grad.cpu().detach().float().numpy()
+
+        guided_out: list[np.ndarray] = []
+        for i, cam in enumerate(cams):
+            h_in, w_in = grad_np[i].shape
+            cam_up = (
+                np.array(
+                    Image.fromarray((cam * 255).astype(np.uint8)).resize((w_in, h_in), Image.Resampling.BICUBIC),
+                ).astype(np.float32)
+                / 255.0
+            )
+
+            guided = grad_np[i] * cam_up
+            p99 = float(np.percentile(guided, 99))
+            if p99 > 0:
+                guided = np.clip(guided / p99, 0.0, 1.0)
+            guided_out.append(guided)
+        return guided_out
+
+    @staticmethod
+    def overlay(
+        pil_img: Image.Image,
+        cam: np.ndarray,
+        alpha: float = 0.65,
+        colormap: str = "jet",
+    ) -> Image.Image:
+        cam = np.sqrt(cam)  # spread activation - avoids tiny concentrated hot spots
+        heatmap = mpl.colormaps[colormap](cam)[:, :, :3]
+        heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(pil_img.size, Image.Resampling.BICUBIC)
+        blended = np.array(pil_img, dtype=np.float32) * (1 - alpha) + np.array(heatmap_pil, dtype=np.float32) * alpha
+        return Image.fromarray(blended.clip(0, 255).astype(np.uint8))
+
+    def grid(
+        self,
+        displays: list[Image.Image],
+        probs: list[float],
+        heatmaps: list[np.ndarray],
+        title: str,
+        out_path: Path,
+        colormap: str = "jet",
+    ) -> None:
+        """Render a 2x2 rotation grid with `heatmaps[i]` overlaid on `displays[i]`."""
+        pred = int(np.argmax(probs))
+
+        fig = Figure(figsize=(10, 10))
+        axes = fig.subplots(2, 2)
+
+        for idx, (angle, heat, prob, disp) in enumerate(
+            zip(constants.ROTATIONS, heatmaps, probs, displays, strict=True)
+        ):
+            img_overlay = self.overlay(disp, heat, colormap=colormap)
+            ax = axes[idx // 2, idx % 2]
+            marker = " *" if idx == pred else ""
+            ax.imshow(img_overlay)
+            ax.set_title(f"{angle}°{marker}  softmax={prob:.0%}", fontsize=11)
+            ax.axis("off")
+
+        fig.suptitle(title, fontsize=11)
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+
+    def rotations(
+        self,
+        pil_img: Image.Image,
+    ) -> tuple[list[Image.Image], list[float], list[np.ndarray], torch.Tensor]:
+        # Display images: resize + center-crop, then PIL-rotate each view.
+        crop = self.crop(pil_img)
+        displays = [crop.rotate(a) if a != 0 else crop for a in constants.ROTATIONS]
+
+        # Model input: transform once (resize/crop/to_tensor/normalize), then
+        # rotate the tensor - same geometry as train/infer (RotationPairDataset,
+        # predict_rotations), not PIL-rotate-then-transform.
+        base = self.preprocess(pil_img)
+        tensors = stack_rotation_views(base, self.device)
+
+        cams, logits = self.compute(tensors)
+        probs = torch.softmax(torch.tensor(logits, dtype=torch.float64), dim=0).tolist()
+        return displays, probs, cams, tensors
 
 
 # ---------------------------------------------------------------------------
@@ -1817,26 +1585,22 @@ PREFETCH_SIZE = 10
 DONE = object()  # sentinel pushed by worker when exhausted
 
 
-@dataclass
-class InferResult:
+class InferResult(TypedDict):
     path: Path
     original: Image.Image
     corrected: Image.Image
     vote: RotationVote
     best_deg: int
-    abstained: bool = False
-    error: str | None = field(default=None)
-
-
-def scan_images(root: Path) -> list[Path]:
-    return sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+    abstained: bool
+    error: str | None
 
 
 def prefetch_worker(
     paths: list[Path],
     model: RotationModel,
     device: torch.device,
-    stats: NormStats,
+    mean: tuple[float, float, float],
+    std: tuple[float, float, float],
     out: queue.Queue,
     bar: tqdm,
     abstain_margin: float | None,
@@ -1851,40 +1615,42 @@ def prefetch_worker(
                 model=model,
                 img=original,
                 device=device,
-                mean=stats.mean,
-                std=stats.std,
+                mean=mean,
+                std=std,
             )
-            best_deg = vote.best_deg
-            abstained = abstain_margin is not None and vote.should_abstain(abstain_margin)
+            best_deg = vote["best_deg"]
+            abstained = abstain_margin is not None and vote["margin"] < abstain_margin
             # Low margin: keep original (no auto-rotate).
             if abstained:
                 corrected = original
             else:
                 corrected = original.rotate(best_deg, expand=True)
-            result: InferResult = InferResult(
-                path=path,
-                original=original,
-                corrected=corrected,
-                vote=vote,
-                best_deg=best_deg,
-                abstained=abstained,
-            )
+            result: InferResult = {
+                "path": path,
+                "original": original,
+                "corrected": corrected,
+                "vote": vote,
+                "best_deg": best_deg,
+                "abstained": abstained,
+                "error": None,
+            }
         except Exception as exc:
             blank = Image.new("RGB", (224, 224), color=(30, 30, 30))
-            result = InferResult(
-                path=path,
-                original=blank,
-                corrected=blank,
-                vote=RotationVote(
-                    probs=dict.fromkeys(constants.ROTATIONS, 0.0),
-                    normalized_probs=dict.fromkeys(constants.ROTATIONS, 0.25),
-                    best_deg=0,
-                    margin=0.0,
-                    angle=0.0,
-                ),
-                best_deg=0,
-                error=str(exc),
-            )
+            result = {
+                "path": path,
+                "original": blank,
+                "corrected": blank,
+                "vote": {
+                    "probs": dict.fromkeys(constants.ROTATIONS, 0.0),
+                    "normalized_probs": dict.fromkeys(constants.ROTATIONS, 0.25),
+                    "best_deg": 0,
+                    "margin": 0.0,
+                    "angle": 0.0,
+                },
+                "best_deg": 0,
+                "abstained": False,
+                "error": str(exc),
+            }
 
         out.put(result)
         bar.update(1)
@@ -1898,29 +1664,30 @@ def show_result(result: InferResult, index: int, total: int) -> None:
 
     from PIL import ImageTk
 
-    prob_str = "  ".join(f"{deg}°: {prob:.3f}" for deg, prob in sorted(result.vote.normalized_probs.items()))
-    if result.abstained:
-        decision = f"ABSTAIN (margin={result.vote.margin:.3f})"
+    vote = result["vote"]
+    prob_str = "  ".join(f"{deg}°: {prob:.3f}" for deg, prob in sorted(vote["normalized_probs"].items()))
+    if result["abstained"]:
+        decision = f"ABSTAIN (margin={vote['margin']:.3f})"
     else:
-        decision = f"correction: {result.best_deg}° (margin={result.vote.margin:.3f})"
-    title = f"[{index}/{total}]  {result.path.name}  ->  {decision}  |  {prob_str}"
+        decision = f"correction: {result['best_deg']}° (margin={vote['margin']:.3f})"
+    title = f"[{index}/{total}]  {result['path'].name}  ->  {decision}  |  {prob_str}"
 
     root = tk.Tk()
     root.title(title)
     root.resizable(True, True)
     root.bind("<q>", lambda _e: root.destroy())
 
-    img = result.corrected.copy()
+    img = result["corrected"].copy()
     img.thumbnail((1280, 900), Image.Resampling.LANCZOS)
 
     photo = ImageTk.PhotoImage(img)
     img_label = tk.Label(root, image=photo, bg="black")
     img_label.pack(fill=tk.BOTH, expand=True)
 
-    if result.error:
+    if result["error"]:
         err_label = tk.Label(
             root,
-            text=f"⚠  {result.error}",
+            text=f"⚠  {result['error']}",
             fg="#ff6060",
             bg="black",
             font=("Helvetica", 11),
@@ -1946,27 +1713,6 @@ def show_result(result: InferResult, index: int, total: int) -> None:
 
 INPUT_NAME = "input"
 OUTPUT_NAME = "logits"
-
-
-def build_onnx_meta(
-    payload: dict,
-    stats: NormStats,
-    checkpoint: Path,
-    weights: str,
-) -> dict:
-    return {
-        "checkpoint": str(checkpoint),
-        "epoch": payload.get("epoch"),
-        "weights": weights,
-        "pooling": payload.get("pooling", "avg"),
-        "pretrained": payload.get("pretrained"),
-        **stats_to_dict(stats),
-        "input_size": constants.INPUT_SIZE,
-        "resize_size": constants.RESIZE_SIZE,
-        "rotations": list(constants.ROTATIONS),
-        "input_name": INPUT_NAME,
-        "output_name": OUTPUT_NAME,
-    }
 
 
 def export_onnx(
@@ -2029,50 +1775,27 @@ def export_onnx(
         raise RuntimeError(f"ONNX export produced no file at {out_path}")
 
     if verify:
-        verify_export(model, out_path, dummy, device)
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            raise RuntimeError("verify requires onnxruntime") from exc
 
+        with torch.no_grad():
+            torch_out = model(dummy).detach().float().cpu().numpy()
 
-def verify_export(
-    model: RotationModel,
-    out_path: Path,
-    dummy: torch.Tensor,
-    device: torch.device,
-) -> None:
-    """Compare torch vs onnxruntime on the dummy batch (optional smoke check)."""
-    try:
-        import onnxruntime as ort
-    except ImportError as exc:
-        raise RuntimeError("verify requires onnxruntime") from exc
+        session = ort.InferenceSession(
+            str(out_path),
+            providers=["CPUExecutionProvider"],
+        )
+        ort_out = session.run(
+            [OUTPUT_NAME],
+            {INPUT_NAME: dummy.detach().float().cpu().numpy()},
+        )[0]
 
-    with torch.no_grad():
-        torch_out = model(dummy).detach().float().cpu().numpy()
-
-    session = ort.InferenceSession(
-        str(out_path),
-        providers=["CPUExecutionProvider"],
-    )
-    ort_out = session.run(
-        [OUTPUT_NAME],
-        {INPUT_NAME: dummy.detach().float().cpu().numpy()},
-    )[0]
-
-    max_abs = float(abs(torch_out.reshape(-1) - ort_out.reshape(-1)).max())
-    logger.info("verify max|torch-ort|=%.6g on dummy batch", max_abs)
-    if max_abs > 1e-4:
-        logger.warning("torch/ort diverge more than 1e-4; check opset / dynamo flags")
-
-
-def write_onnx_meta(meta: dict, out_path: Path, opset: int, dynamo: bool) -> Path:
-    meta_path = out_path.with_suffix(".json")
-    payload = {
-        **meta,
-        "onnx": str(out_path),
-        "opset": opset,
-        "dynamo": dynamo,
-    }
-    meta_path.write_text(json.dumps(payload, indent=2) + "\n")
-    logger.info("wrote metadata %s", meta_path)
-    return meta_path
+        max_abs = float(abs(torch_out.reshape(-1) - ort_out.reshape(-1)).max())
+        logger.info("verify max|torch-ort|=%.6g on dummy batch", max_abs)
+        if max_abs > 1e-4:
+            logger.warning("torch/ort diverge more than 1e-4; check opset / dynamo flags")
 
 
 # ---------------------------------------------------------------------------
@@ -2086,22 +1809,19 @@ def run_train(args: argparse.Namespace) -> None:
     # Pretrained features expect the ImageNet normalization they were trained
     # with; from-scratch runs compute stats over the train split instead.
     pretrain_stats = (
-        NormStats(
-            mean=IMAGENET_DEFAULT_MEAN,
-            std=IMAGENET_DEFAULT_STD,
-        )
+        (IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
         if args.pretrain
         else None
     )
     datasets = build_datasets(args.data_root)
-    ds, stats = build_dataset(
+    ds, (mean, std) = build_dataset(
         split="train",
         datasets=datasets,
         device=device,
         num_workers=args.num_workers,
         batch_size=args.batch_size,
         prefetch_factor=args.prefetch_factor,
-        stats=pretrain_stats,
+        mean_std=pretrain_stats,
         invalidate_cache=args.invalidate_cache,
         erasing_p=args.erasing_p,
         crop_policy=args.crop_policy,
@@ -2121,7 +1841,8 @@ def run_train(args: argparse.Namespace) -> None:
         train_loader=dl,
         seed=args.seed,
         checkpoint_dir=constants.CHECKPOINT_DIR,
-        stats=stats,
+        mean=mean,
+        std=std,
         epochs=args.epochs,
         lr=args.lr,
         weight_decay=args.weight_decay,
@@ -2157,7 +1878,7 @@ def run_browse(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
 
     print(f"Loading {args.checkpoint}  ({args.weights} weights)...")
-    _, model, stats = load_checkpoint_model(
+    _, model, (mean, std) = load_checkpoint_model(
         args.checkpoint,
         device,
         weights=args.weights,
@@ -2166,7 +1887,7 @@ def run_browse(args: argparse.Namespace) -> None:
 
     root_dir = Path(args.dir)
     print(f"Scanning {root_dir}...")
-    paths = scan_images(root_dir)
+    paths = sorted(p for p in root_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
     if not paths:
         print("No images found.")
         return
@@ -2181,7 +1902,8 @@ def run_browse(args: argparse.Namespace) -> None:
             paths,
             model,
             device,
-            stats,
+            mean,
+            std,
             result_queue,
             bar,
             args.abstain_margin,
@@ -2199,34 +1921,36 @@ def run_browse(args: argparse.Namespace) -> None:
         if item is DONE:
             break
 
-        assert isinstance(item, InferResult)
+        assert isinstance(item, dict)
         processed += 1
 
-        best_norm = max(item.vote.normalized_probs.values())
-        if not item.error and best_norm >= args.conf_threshold:
+        vote = item["vote"]
+        best_norm = max(vote["normalized_probs"].values())
+        if not item["error"] and best_norm >= args.conf_threshold:
             skipped += 1
             tqdm.write(
-                f"[{processed}/{len(paths)}]  {item.path.name}  skipped (conf={best_norm:.3f} >= {args.conf_threshold})"
+                f"[{processed}/{len(paths)}]  {item['path'].name}"
+                f"  skipped (conf={best_norm:.3f} >= {args.conf_threshold})"
             )
             continue
 
         shown += 1
-        if item.abstained:
+        if item["abstained"]:
             abstained += 1
 
-        if item.error:
-            tqdm.write(f"[{processed}/{len(paths)}]  {item.path}  ERROR: {item.error}")
+        if item["error"]:
+            tqdm.write(f"[{processed}/{len(paths)}]  {item['path']}  ERROR: {item['error']}")
         else:
-            status = "abstain" if item.abstained else f"best={item.best_deg}°"
+            status = "abstain" if item["abstained"] else f"best={item['best_deg']}°"
             tqdm.write(
-                f"[{processed}/{len(paths)}]  {item.path.name}"
+                f"[{processed}/{len(paths)}]  {item['path'].name}"
                 f"  {status}"
-                f"  margin={item.vote.margin:.3f}"
+                f"  margin={vote['margin']:.3f}"
                 f"  conf={best_norm:.3f}"
-                f"  norm={{{', '.join(f'{d}°:{p:.3f}' for d, p in sorted(item.vote.normalized_probs.items()))}}}"
+                f"  norm={{{', '.join(f'{d}°:{p:.3f}' for d, p in sorted(vote['normalized_probs'].items()))}}}"
             )
 
-        show_result(item, shown, len(paths))
+        show_result(cast(InferResult, item), shown, len(paths))
 
     bar.close()
     worker.join()
@@ -2241,21 +1965,21 @@ def run_gradcam(args: argparse.Namespace) -> None:
     images = [p for p in args.images if p.is_file()]
 
     device = torch.device(args.device)
-    _, model, stats = load_checkpoint_model(
+    _, model, (mean, std) = load_checkpoint_model(
         args.checkpoint,
         device,
         weights=args.weights,
     )
-    preprocess = build_eval_transform(mean=stats.mean, std=stats.std)
+    gradcam = GradCAM(model, device, mean, std)
 
     args.out_dir.mkdir(exist_ok=True)
 
     for img_path in images:
         pil = open_rgb(img_path)
-        displays, probs, cams, tensors = compute_rotations(model, pil, preprocess, device)
+        displays, probs, cams, tensors = gradcam.rotations(pil)
         angle = circular_mean_angle(probs)
 
-        visualise_grid(
+        gradcam.grid(
             displays,
             probs,
             cams,
@@ -2265,8 +1989,8 @@ def run_gradcam(args: argparse.Namespace) -> None:
         )
         print(f"{img_path.name} - predicted angle {angle:.1f}°")
 
-        guided_cams = compute_guided_gradcam_batch(model, tensors, cams)
-        visualise_grid(
+        guided_cams = gradcam.guided(tensors, cams)
+        gradcam.grid(
             displays,
             probs,
             guided_cams,
@@ -2279,7 +2003,7 @@ def run_gradcam(args: argparse.Namespace) -> None:
 def run_dfr(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
 
-    payload, model, stats = load_checkpoint_model(
+    payload, model, (mean, std) = load_checkpoint_model(
         args.checkpoint,
         device,
         weights=args.weights,
@@ -2292,16 +2016,45 @@ def run_dfr(args: argparse.Namespace) -> None:
         args.weights,
     )
     model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
-    freeze_backbone(model, reinit_head=not args.no_reinit_head)
 
-    loader = build_head_loader(
-        data_roots=list(args.data_root),
-        stats=stats,
+    # Freeze everything outside the head; the backbone also stays in eval mode
+    # so its BatchNorm running stats remain at the full model's values.
+    for p in model.backbone.parameters():
+        p.requires_grad_(False)
+    for p in model.pool.parameters():
+        p.requires_grad_(False)
+    model.backbone.eval()
+
+    if not args.no_reinit_head:
+        for module in model.head.modules():
+            if hasattr(module, "reset_parameters"):
+                module.reset_parameters()  # type: ignore[operator]
+        logger.info("reinitialised head for a fresh DFR fit")
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    logger.info("trainable params: %d | frozen params: %d", trainable, frozen)
+
+    # Indexed under its own cache name so it never collides with the main
+    # train/val file indexes.
+    files = index_files(
+        name="dfr",
+        roots=list(args.data_root),
+        cache_dir=constants.INDEX_CACHE_DIR,
+        invalidate_cache=args.invalidate_cache,
+    )
+    dataset = RotationPairDataset(
+        base=ImageLoader(files=files),
+        transform=build_train_transform(mean=mean, std=std),
+    )
+    logger.info("DFR reweighting set: %d files -> %d pairs", len(files), len(dataset))
+    loader = build_loader(
+        dataset,
         device=device,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
-        invalidate_cache=args.invalidate_cache,
+        shuffle=True,
     )
 
     retrain_head(
@@ -2314,27 +2067,44 @@ def run_dfr(args: argparse.Namespace) -> None:
         grad_clip=args.grad_clip,
     )
 
-    save_dfr_checkpoint(
-        path=args.output,
-        model=model,
-        stats=stats,
-        source_checkpoint=args.checkpoint,
+    state = model.state_dict()
+    save_payload(
+        args.output,
+        checkpoint_payload(
+            state,
+            state,
+            mean,
+            std,
+            extras={
+                "epoch": "dfr",
+                "pooling": model.pooling,
+                "dfr_source": str(args.checkpoint),
+            },
+        ),
     )
+    logger.info("saved DFR checkpoint %s", args.output)
 
 
 def run_export(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
-    payload, model, stats = load_checkpoint_model(
+    payload, model, (mean, std) = load_checkpoint_model(
         args.checkpoint,
         device,
         weights=args.weights,
     )
-    meta = build_onnx_meta(
-        payload,
-        stats,
-        checkpoint=args.checkpoint,
-        weights=args.weights,
-    )
+    meta = {
+        "checkpoint": str(args.checkpoint),
+        "epoch": payload.get("epoch"),
+        "weights": args.weights,
+        "pooling": payload.get("pooling", "avg"),
+        "pretrained": payload.get("pretrained"),
+        **stats_dict(mean, std),
+        "input_size": constants.INPUT_SIZE,
+        "resize_size": constants.RESIZE_SIZE,
+        "rotations": list(constants.ROTATIONS),
+        "input_name": INPUT_NAME,
+        "output_name": OUTPUT_NAME,
+    }
     logger.info(
         "loaded %s (epoch=%s, weights=%s, pooling=%s)",
         args.checkpoint,
@@ -2355,7 +2125,16 @@ def run_export(args: argparse.Namespace) -> None:
         dynamo=args.dynamo,
         verify=args.verify,
     )
-    write_onnx_meta(meta, out_path, opset=args.opset, dynamo=args.dynamo)
+
+    meta_path = out_path.with_suffix(".json")
+    meta_payload = {
+        **meta,
+        "onnx": str(out_path),
+        "opset": args.opset,
+        "dynamo": args.dynamo,
+    }
+    meta_path.write_text(json.dumps(meta_payload, indent=2) + "\n")
+    logger.info("wrote metadata %s", meta_path)
     logger.info("done: %s (%.1f MiB)", out_path, out_path.stat().st_size / (1024 * 1024))
 
 
