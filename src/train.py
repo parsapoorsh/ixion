@@ -136,33 +136,38 @@ def autocast_dtype(device: torch.device) -> torch.dtype:
     return torch.bfloat16 if capability[0] >= 8 else torch.float32
 
 
-def setup_model(
+def train(
     device: torch.device,
+    train_loader: DataLoader,
+    checkpoint_dir: Path,
     seed: int,
+    stats: NormStats,
+    epochs: int,
     lr: float,
     weight_decay: float,
-    ema_decay: float,
-    ema_warmup_steps: float,
     drop_rate: float,
     drop_path_rate: float,
     pooling: str,
+    warmup_epochs: float,
+    grad_clip: float,
+    ema_horizon_epochs: float,
     use_sam: bool,
     sam_rho: float,
     backbone_lr_mult: float,
     pretrained: bool,
     compile_model: bool,
     resume_from: Path | None,
-) -> tuple[
-    nn.Module,
-    ModelEMA,
-    torch.optim.Optimizer,
-    nn.Module,
-    int,
-    int | None,
-    int | None,
-]:
+) -> None:
+    steps_per_epoch = len(train_loader)
+    # Per-step EMA decay so the shadow averages over ema_horizon_epochs
+    # epochs regardless of --batch-size; the warmup covers one epoch.
+    ema_decay = math.exp(-1.0 / (ema_horizon_epochs * steps_per_epoch))
+    ema_warmup_steps = steps_per_epoch
+
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
+
+    autocast = autocast_dtype(device)
 
     # Peek at the checkpoint before building the model so resumes honour the
     # pooling variant it was trained with (attention vs global average).
@@ -227,8 +232,8 @@ def setup_model(
     loss_fn = nn.BCEWithLogitsLoss()
 
     start_epoch = 0
-    schedule_total_steps = None
-    schedule_warmup_steps = None
+    saved_schedule_total_steps = None
+    saved_schedule_warmup_steps = None
     if resume_from is not None:
         assert resume_payload is not None
         payload = resume_payload
@@ -249,8 +254,8 @@ def setup_model(
             torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in payload["rng_cuda"]])
 
         start_epoch = int(payload["epoch"]) + 1
-        schedule_total_steps = int(payload["schedule_total_steps"])
-        schedule_warmup_steps = int(payload["schedule_warmup_steps"])
+        saved_schedule_total_steps = int(payload["schedule_total_steps"])
+        saved_schedule_warmup_steps = int(payload["schedule_warmup_steps"])
         logger.info(
             "resumed from %s (next epoch=%d, ema_step=%d)",
             resume_from,
@@ -270,71 +275,6 @@ def setup_model(
     else:
         logger.info("disabled torch.compile by request")
 
-    return (
-        model,
-        ema,
-        optimizer,
-        loss_fn,
-        start_epoch,
-        schedule_total_steps,
-        schedule_warmup_steps,
-    )
-
-
-def train(
-    device: torch.device,
-    train_loader: DataLoader,
-    checkpoint_dir: Path,
-    seed: int,
-    stats: NormStats,
-    epochs: int,
-    lr: float,
-    weight_decay: float,
-    drop_rate: float,
-    drop_path_rate: float,
-    pooling: str,
-    warmup_epochs: float,
-    grad_clip: float,
-    ema_horizon_epochs: float,
-    use_sam: bool,
-    sam_rho: float,
-    backbone_lr_mult: float,
-    pretrained: bool,
-    compile_model: bool,
-    resume_from: Path | None,
-) -> None:
-    steps_per_epoch = len(train_loader)
-    # Per-step EMA decay so the shadow averages over ema_horizon_epochs
-    # epochs regardless of --batch-size; the warmup covers one epoch.
-    ema_decay = math.exp(-1.0 / (ema_horizon_epochs * steps_per_epoch))
-    ema_warmup_steps = steps_per_epoch
-
-    autocast = autocast_dtype(device)
-    (
-        model,
-        ema,
-        optimizer,
-        loss_fn,
-        start_epoch,
-        saved_schedule_total_steps,
-        saved_schedule_warmup_steps,
-    ) = setup_model(
-        device=device,
-        seed=seed,
-        lr=lr,
-        weight_decay=weight_decay,
-        ema_decay=ema_decay,
-        ema_warmup_steps=ema_warmup_steps,
-        drop_rate=drop_rate,
-        drop_path_rate=drop_path_rate,
-        pooling=pooling,
-        use_sam=use_sam,
-        sam_rho=sam_rho,
-        backbone_lr_mult=backbone_lr_mult,
-        pretrained=pretrained,
-        compile_model=compile_model,
-        resume_from=resume_from,
-    )
     if pretrained and resume_from is None:
         logger.info("initialized backbone from ImageNet-pretrained weights")
 
