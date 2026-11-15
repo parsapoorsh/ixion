@@ -58,7 +58,6 @@ N_ROTS = len(constants.ROTATIONS)
 
 # Checkpoint keys holding the two weight sets: EMA shadow and raw weights.
 WeightName = Literal["ema", "raw"]
-WEIGHT_KEYS: dict[WeightName, str] = {"ema": "ema", "raw": "model"}
 
 
 # ---------------------------------------------------------------------------
@@ -66,20 +65,6 @@ WEIGHT_KEYS: dict[WeightName, str] = {"ema": "ema", "raw": "model"}
 # ---------------------------------------------------------------------------
 
 MeanStd = tuple[tuple[float, float, float], tuple[float, float, float]]
-
-
-def stats_to_dict(
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
-) -> dict[str, list[float]]:
-    return {"mean": list(mean), "std": list(std)}
-
-
-def stats_from_dict(raw: dict) -> MeanStd:
-    return (
-        cast(tuple[float, float, float], tuple(raw["mean"])),
-        cast(tuple[float, float, float], tuple(raw["std"])),
-    )
 
 
 def compute_stats_chunk(paths: Sequence[Path]) -> tuple[np.ndarray, np.ndarray, int, int]:
@@ -99,10 +84,18 @@ def compute_stats_chunk(paths: Sequence[Path]) -> tuple[np.ndarray, np.ndarray, 
                 path,
                 preview_size=(constants.RESIZE_SIZE, constants.RESIZE_SIZE),
             )
-            image = TF.resize(image, [constants.RESIZE_SIZE])
-            image = TF.center_crop(
-                image,
-                [constants.INPUT_SIZE, constants.INPUT_SIZE],
+            image = image.resize(
+                (constants.RESIZE_SIZE, constants.RESIZE_SIZE),
+                Image.Resampling.BILINEAR,
+            )
+            offset = (constants.RESIZE_SIZE - constants.INPUT_SIZE) // 2
+            image = image.crop(
+                (
+                    offset,
+                    offset,
+                    offset + constants.INPUT_SIZE,
+                    offset + constants.INPUT_SIZE,
+                )
             )
             array = np.array(image, dtype=np.uint8, copy=True)
             image.close()
@@ -183,7 +176,10 @@ def compute_stats(
     if cache_path is not None and cache_path.exists() and not invalidate_cache:
         cached = json.loads(cache_path.read_text())
         if fingerprint is None or cached.get("fingerprint") == fingerprint:
-            return stats_from_dict(cached)
+            return (
+                cast(tuple[float, float, float], tuple(cached["mean"])),
+                cast(tuple[float, float, float], tuple(cached["std"])),
+            )
         logger.info("stats cache %s does not match configuration; recomputing", cache_path)
 
     sample_total = len(files) if sample_indices is None else len(sample_indices)
@@ -250,7 +246,8 @@ def compute_stats(
         cast(tuple[float, float, float], tuple(std_arr.tolist())),
     )
     if cache_path is not None:
-        payload: dict = stats_to_dict(*mean_std)
+        mean, std = mean_std
+        payload: dict = {"mean": list(mean), "std": list(std)}
         if fingerprint is not None:
             payload["fingerprint"] = fingerprint
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -335,7 +332,7 @@ def build_eval_transform(
 # ---------------------------------------------------------------------------
 
 
-class RotationPairDataset(Dataset):
+class RotationPairDataset(Dataset[tuple[torch.Tensor, float]]):
     """Wraps a file list so each item is (image, is_upright_label).
 
     For N images, len = 4 * N. Sample i decomposes to img_idx = i // 4 and
@@ -475,21 +472,22 @@ def load_checkpoint_model(
     weights ("raw"). Returned model is in eval mode.
     """
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    state_key = WEIGHT_KEYS[weights]
-    if state_key not in payload:
-        raise KeyError(f"checkpoint missing '{state_key}' state dict; keys={list(payload)}")
+    if weights not in payload:
+        raise KeyError(f"checkpoint missing '{weights}' weights; keys={list(payload)}")
 
     raw_stats = payload.get("stats")
-    if raw_stats:
-        mean_std = stats_from_dict(raw_stats)
-    elif strict_stats:
-        raise KeyError("checkpoint has no 'stats'; normalization cannot be inferred")
-    else:
+    if not raw_stats:
+        if strict_stats:
+            raise KeyError("checkpoint has no 'stats'; normalization cannot be inferred")
         cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
         if not cache_file.exists():
             raise RuntimeError(f"stats cache not found: {cache_file}")
-        mean_std = stats_from_dict(json.loads(cache_file.read_text()))
+        raw_stats = json.loads(cache_file.read_text())
         logger.info("loaded stats from cache file %s", cache_file)
+    mean_std: MeanStd = (
+        cast(tuple[float, float, float], tuple(raw_stats["mean"])),
+        cast(tuple[float, float, float], tuple(raw_stats["std"])),
+    )
 
     logger.info(
         "loaded %s (epoch=%s, ema_step=%s, weights=%s, pooling=%s)",
@@ -503,32 +501,9 @@ def load_checkpoint_model(
         pretrained=False,
         pooling=payload.get("pooling", "avg"),
     ).to(device)
-    model.load_state_dict(payload[state_key])
+    model.load_state_dict(payload[weights])
     model.eval()
     return payload, model, mean_std
-
-
-def save_payload(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(payload, path)
-
-
-def checkpoint_payload(
-    model_state: dict,
-    ema_state: dict,
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
-    extras: dict | None = None,
-) -> dict:
-    """Assemble the on-disk checkpoint dict shared by training and DFR."""
-    payload: dict = {
-        "model": model_state,
-        "ema": ema_state,
-        "stats": stats_to_dict(mean, std),
-    }
-    if extras:
-        payload.update(extras)
-    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -638,20 +613,18 @@ def save_checkpoint(
     # Under SAM the real state lives in the wrapped base optimizer; save that
     # so the on-disk state is plain AdamW and resumes with or without --sam.
     base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
-    payload = checkpoint_payload(
-        raw_model.state_dict(),
-        ema.state_dict(),
-        mean,
-        std,
-        extras={
-            "ema_step": ema.step,
-            "optimizer": base_optimizer.state_dict(),
-            "rng_cpu": torch.get_rng_state(),
-            "rng_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
-            **(extras or {}),
-        },
-    )
-    save_payload(path, payload)
+    payload = {
+        "raw": raw_model.state_dict(),
+        "ema": ema.state_dict(),
+        "stats": {"mean": list(mean), "std": list(std)},
+        "ema_step": ema.step,
+        "optimizer": base_optimizer.state_dict(),
+        "rng_cpu": torch.get_rng_state(),
+        "rng_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
+        **(extras or {}),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, path)
 
 
 def cosine_with_warmup(
@@ -787,7 +760,7 @@ def train(
     saved_schedule_warmup_steps = None
     if resume_from is not None:
         assert resume_payload is not None
-        model.load_state_dict(resume_payload["model"])
+        model.load_state_dict(resume_payload["raw"])
 
         ema.module.load_state_dict(resume_payload["ema"])
         ema.step = int(resume_payload["ema_step"])
@@ -1892,20 +1865,16 @@ def run_dfr(args: argparse.Namespace) -> None:
     )
 
     state = model.state_dict()
-    save_payload(
-        args.output,
-        checkpoint_payload(
-            state,
-            state,
-            mean,
-            std,
-            extras={
-                "epoch": "dfr",
-                "pooling": model.pooling,
-                "dfr_source": str(args.checkpoint),
-            },
-        ),
-    )
+    payload = {
+        "raw": state,
+        "ema": state,
+        "stats": {"mean": list(mean), "std": list(std)},
+        "epoch": "dfr",
+        "pooling": model.pooling,
+        "dfr_source": str(args.checkpoint),
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, args.output)
     logger.info("saved DFR checkpoint %s", args.output)
 
 
@@ -1922,7 +1891,8 @@ def run_export(args: argparse.Namespace) -> None:
         "weights": args.weights,
         "pooling": payload.get("pooling", "avg"),
         "pretrained": payload.get("pretrained"),
-        **stats_to_dict(mean, std),
+        "mean": list(mean),
+        "std": list(std),
         "input_size": constants.INPUT_SIZE,
         "resize_size": constants.RESIZE_SIZE,
         "rotations": list(constants.ROTATIONS),
