@@ -179,11 +179,6 @@ def add_training_args(p: argparse.ArgumentParser) -> None:
         help="how to aggregate backbone features before the head",
     )
     p.add_argument(
-        "--sam",
-        action="store_true",
-        help="use Sharpness-Aware Minimization over AdamW (2x passes/step, flatter minima)",
-    )
-    p.add_argument(
         "--sam-rho",
         type=float,
         default=0.05,

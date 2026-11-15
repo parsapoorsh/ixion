@@ -602,7 +602,7 @@ def save_checkpoint(
     path: Path,
     model: nn.Module,
     ema: ModelEMA,
-    optimizer: torch.optim.Optimizer,
+    optimizer: SAM,
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
     extras: dict | None = None,
@@ -610,15 +610,13 @@ def save_checkpoint(
     # torch.compile() wraps the module and prefixes state_dict keys with
     # "_orig_mod." - unwrap so checkpoints stay portable across compile.
     raw_model = getattr(model, "_orig_mod", model)
-    # Under SAM the real state lives in the wrapped base optimizer; save that
-    # so the on-disk state is plain AdamW and resumes with or without --sam.
-    base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
     payload = {
         "raw": raw_model.state_dict(),
         "ema": ema.state_dict(),
         "stats": {"mean": list(mean), "std": list(std)},
         "ema_step": ema.step,
-        "optimizer": base_optimizer.state_dict(),
+        # The real state lives in SAM's wrapped AdamW.
+        "optimizer": optimizer.base_optimizer.state_dict(),
         "rng_cpu": torch.get_rng_state(),
         "rng_cuda": (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
         **(extras or {}),
@@ -672,7 +670,6 @@ def train(
     warmup_epochs: float,
     grad_clip: float,
     ema_horizon_epochs: float,
-    use_sam: bool,
     sam_rho: float,
     backbone_lr_mult: float,
     pretrained: bool,
@@ -732,28 +729,19 @@ def train(
         {"params": model.backbone.parameters(), "lr_scale": backbone_lr_mult},
         {"params": [p for name, p in model.named_parameters() if not name.startswith("backbone.")], "lr_scale": 1.0},
     ]
-    if use_sam:
-        optimizer: torch.optim.Optimizer = SAM(
-            param_groups,
-            base_optimizer=torch.optim.AdamW,
-            rho=sam_rho,
-            lr=lr,
-            betas=(0.9, 0.999),
-            weight_decay=weight_decay,
-        )
-        logger.info("using SAM (rho=%.3f) over AdamW", sam_rho)
-    else:
-        optimizer = torch.optim.AdamW(
-            param_groups,
-            lr=lr,
-            betas=(0.9, 0.999),
-            weight_decay=weight_decay,
-        )
+    optimizer = SAM(
+        param_groups,
+        base_optimizer=torch.optim.AdamW,
+        rho=sam_rho,
+        lr=lr,
+        betas=(0.9, 0.999),
+        weight_decay=weight_decay,
+    )
+    logger.info("using SAM (rho=%.3f) over AdamW", sam_rho)
     # Inference picks the rotation with the highest upright logit
     # (argmax over 4 views), so the absolute decision threshold
     # doesn't matter - only the relative ranking.
     loss_fn = nn.BCEWithLogitsLoss()
-    sam_optimizer = optimizer if isinstance(optimizer, SAM) else None
 
     start_epoch = 0
     saved_schedule_total_steps = None
@@ -767,8 +755,7 @@ def train(
 
         # Saved state is plain base-optimizer (AdamW) state; load it into the
         # base so resume works whether or not SAM wraps it this run.
-        base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
-        base_optimizer.load_state_dict(resume_payload["optimizer"])
+        optimizer.base_optimizer.load_state_dict(resume_payload["optimizer"])
 
         # map_location=device pulls the saved ByteTensors to CUDA, but
         # set_rng_state_all requires CPU ByteTensors - move them back.
@@ -868,24 +855,20 @@ def train(
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
 
-            if sam_optimizer is not None:
-                # First pass climbs to the worst-case point; the second pass
-                # recomputes the gradient there and applies the real update.
-                sam_optimizer.first_step(zero_grad=True)
-                sam_optimizer.disable_running_stats(model)
-                with torch.autocast(device_type=device.type, dtype=autocast_dtype):
-                    loss_adv = loss_fn(model(imgs), labels)
-                loss_adv.backward()
+            # First pass climbs to the worst-case point; the second pass
+            # recomputes the gradient there and applies the real update.
+            optimizer.first_step(zero_grad=True)
+            optimizer.disable_running_stats(model)
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype):
+                loss_adv = loss_fn(model(imgs), labels)
+            loss_adv.backward()
 
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(),
                 grad_clip,
             )
-            if sam_optimizer is not None:
-                sam_optimizer.second_step(zero_grad=True)
-                sam_optimizer.enable_running_stats(model)
-            else:
-                optimizer.step()
+            optimizer.second_step(zero_grad=True)
+            optimizer.enable_running_stats(model)
             ema.update(model)
 
             preds = (logits > 0).float()
@@ -1657,7 +1640,6 @@ def run_train(args: argparse.Namespace) -> None:
         warmup_epochs=args.warmup_epochs,
         grad_clip=args.grad_clip,
         ema_horizon_epochs=args.ema_horizon_epochs,
-        use_sam=args.sam,
         sam_rho=args.sam_rho,
         backbone_lr_mult=args.backbone_lr_mult,
         pretrained=args.pretrain,

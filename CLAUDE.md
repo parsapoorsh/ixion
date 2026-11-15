@@ -12,7 +12,7 @@ to predict P(upright) for any input image. At inference time, the four 90° rota
 are scored with the **same geometry as training** (eval transform, then `TF.rotate`
 on the tensor). The view with the highest upright probability (`best_deg`) is the
 correction; `margin` (top1 − top2) supports abstaining on ambiguous images.
-Ship **EMA** weights. Training uses `torch.compile`.
+Ship **EMA** weights. Training uses SAM over AdamW and `torch.compile`.
 
 Training data is ImageNet + COCO (general-purpose image corpora), which gives the
 model diverse texture/content without needing a labelled rotation dataset. Each base
@@ -117,6 +117,9 @@ venv/bin/python src/cli.py export \
 - **From scratch by default.** `core.train` builds the backbone with `pretrained=False`.
   `--pretrain` opts into timm's ImageNet weights, and the `finetune` subcommand is a
   short-schedule preset over them (see Running).
+- **SAM is the optimizer.** Every step wraps AdamW in Sharpness-Aware
+  Minimization (`--sam-rho`, two forward/backward passes); there is no plain
+  AdamW training path.
 - **Label-safe augmentation only.** No spatial flips/rotations (would corrupt the
   binary label). Train uses ColorJitter, RandomGrayscale, and RandomErasing after
   normalize; backbone uses stochastic depth (`drop_path_rate=0.1`).
