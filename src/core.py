@@ -623,9 +623,8 @@ def predict_rotations(
     order = np.argsort(probs)
     top1_i = int(order[-1])
     top2_i = int(order[-2]) if len(order) > 1 else top1_i
-    probs_by_deg = {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)}
     return {
-        "probs": probs_by_deg,
+        "probs": {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)},
         "best_deg": int(constants.ROTATIONS[top1_i]),
         "margin": float(probs[top1_i] - probs[top2_i]),
     }
@@ -1631,12 +1630,11 @@ def show_result(result: InferResult, index: int, total: int) -> None:
 
     from PIL import ImageTk
 
-    vote = result["vote"]
-    prob_str = "  ".join(f"{deg}°: {prob:.3f}" for deg, prob in sorted(vote["probs"].items()))
+    prob_str = "  ".join(f"{deg}°: {prob:.3f}" for deg, prob in sorted(result["vote"]["probs"].items()))
     if result["abstained"]:
-        decision = f"ABSTAIN (margin={vote['margin']:.3f})"
+        decision = f"ABSTAIN (margin={result['vote']['margin']:.3f})"
     else:
-        decision = f"correction: {vote['best_deg']}° (margin={vote['margin']:.3f})"
+        decision = f"correction: {result['vote']['best_deg']}° (margin={result['vote']['margin']:.3f})"
     title = f"[{index}/{total}]  {result['path'].name}  ->  {decision}  |  {prob_str}"
 
     root = tk.Tk()
@@ -1890,8 +1888,7 @@ def run_browse(args: argparse.Namespace) -> None:
         result = cast(InferResult, item)
         processed += 1
 
-        vote = result["vote"]
-        best_norm = max(vote["probs"].values())
+        best_norm = max(result["vote"]["probs"].values())
         if not result["error"] and best_norm >= args.conf_threshold:
             skipped += 1
             tqdm.write(
@@ -1907,13 +1904,14 @@ def run_browse(args: argparse.Namespace) -> None:
         if result["error"]:
             tqdm.write(f"[{processed}/{len(paths)}]  {result['path']}  ERROR: {result['error']}")
         else:
-            status = "abstain" if result["abstained"] else f"best={vote['best_deg']}°"
+            status = "abstain" if result["abstained"] else f"best={result['vote']['best_deg']}°"
+            norm_str = ", ".join(f"{d}°:{p:.3f}" for d, p in sorted(result["vote"]["probs"].items()))
             tqdm.write(
                 f"[{processed}/{len(paths)}]  {result['path'].name}"
                 f"  {status}"
-                f"  margin={vote['margin']:.3f}"
+                f"  margin={result['vote']['margin']:.3f}"
                 f"  conf={best_norm:.3f}"
-                f"  norm={{{', '.join(f'{d}°:{p:.3f}' for d, p in sorted(vote['probs'].items()))}}}"
+                f"  norm={{{norm_str}}}"
             )
 
         show_result(result, shown, len(paths))
