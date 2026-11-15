@@ -682,6 +682,13 @@ def train(
     ema_decay = math.exp(-1.0 / (ema_horizon_epochs * steps_per_epoch))
     ema_warmup_steps = steps_per_epoch
 
+    # A resume keeps the LR schedule from the checkpoint; the run still stops
+    # after --epochs, which may cut the cosine short.
+    requested_total_steps = steps_per_epoch * epochs
+    requested_warmup_steps = int(steps_per_epoch * warmup_epochs)
+    total_steps = requested_total_steps
+    warmup_steps = requested_warmup_steps
+
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
@@ -744,8 +751,6 @@ def train(
     loss_fn = nn.BCEWithLogitsLoss()
 
     start_epoch = 0
-    saved_schedule_total_steps = None
-    saved_schedule_warmup_steps = None
     if resume_from is not None:
         assert resume_payload is not None
         model.load_state_dict(resume_payload["raw"])
@@ -753,8 +758,7 @@ def train(
         ema.module.load_state_dict(resume_payload["ema"])
         ema.step = int(resume_payload["ema_step"])
 
-        # Saved state is plain base-optimizer (AdamW) state; load it into the
-        # base so resume works whether or not SAM wraps it this run.
+        # Saved state is plain AdamW; load it into SAM's base optimizer.
         optimizer.base_optimizer.load_state_dict(resume_payload["optimizer"])
 
         # map_location=device pulls the saved ByteTensors to CUDA, but
@@ -764,8 +768,20 @@ def train(
             torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in resume_payload["rng_cuda"]])
 
         start_epoch = int(resume_payload["epoch"]) + 1
-        saved_schedule_total_steps = int(resume_payload["schedule_total_steps"])
-        saved_schedule_warmup_steps = int(resume_payload["schedule_warmup_steps"])
+        total_steps = int(resume_payload["schedule_total_steps"])
+        warmup_steps = int(resume_payload["schedule_warmup_steps"])
+        if (total_steps, warmup_steps) != (requested_total_steps, requested_warmup_steps):
+            logger.info(
+                "checkpoint schedule wins for the LR curve: total %d, warmup %d "
+                "(--epochs %d and --warmup-epochs %s would give total %d, warmup %d; "
+                "the run still stops after --epochs)",
+                total_steps,
+                warmup_steps,
+                epochs,
+                warmup_epochs,
+                requested_total_steps,
+                requested_warmup_steps,
+            )
         logger.info(
             "resumed from %s (next epoch=%d, ema_step=%d)",
             resume_from,
@@ -788,24 +804,6 @@ def train(
     if pretrained and resume_from is None:
         logger.info("initialized backbone from ImageNet-pretrained weights")
 
-    requested_total_steps = steps_per_epoch * epochs
-    requested_warmup_steps = int(steps_per_epoch * warmup_epochs)
-    total_steps = saved_schedule_total_steps if saved_schedule_total_steps is not None else requested_total_steps
-    warmup_steps = saved_schedule_warmup_steps if saved_schedule_warmup_steps is not None else requested_warmup_steps
-    if saved_schedule_total_steps is not None and (
-        saved_schedule_total_steps != requested_total_steps or saved_schedule_warmup_steps != requested_warmup_steps
-    ):
-        logger.info(
-            "checkpoint schedule wins for the LR curve: total %d, warmup %d "
-            "(--epochs %d and --warmup-epochs %s would give total %d, warmup %d; "
-            "the run still stops after --epochs)",
-            saved_schedule_total_steps,
-            saved_schedule_warmup_steps,
-            epochs,
-            warmup_epochs,
-            requested_total_steps,
-            requested_warmup_steps,
-        )
     logger.info(
         "%d epochs x %d steps, schedule total %d (warmup %d steps)",
         epochs,
