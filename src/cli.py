@@ -9,28 +9,17 @@ Subcommands:
     gradcam   GradCAM visualisation for a few images
     dfr       retrain the head on frozen features
     export    export a checkpoint to ONNX
+
+This module only parses arguments; the subcommand bodies live in ``core``,
+which is imported after parsing so ``cli.py --help`` never loads torch.
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
-import queue
-import threading
 from pathlib import Path
 
-import torch
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-
-import config
 import constants
-import core
-from utils.image_io import open_rgb
-from utils.logsetup import setup_logging
-
-logger = logging.getLogger(__name__)
 
 # Short-schedule preset applied by the finetune subcommand; explicit flags
 # still win. Lower backbone LR and weight decay keep the pretrained features
@@ -225,7 +214,6 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_training_args(train_parser)
-    train_parser.set_defaults(handler=run_train)
 
     finetune_parser = subparsers.add_parser(
         "finetune",
@@ -239,7 +227,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_training_args(finetune_parser)
     finetune_parser.set_defaults(**FINETUNE_DEFAULTS)
-    finetune_parser.set_defaults(handler=run_train)
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -255,7 +242,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="stop after N batches (quick smoke test; default: full val set)",
     )
-    validate_parser.set_defaults(handler=run_validate)
 
     browse_parser = subparsers.add_parser(
         "browse",
@@ -292,7 +278,6 @@ def build_parser() -> argparse.ArgumentParser:
             "margin is below this (e.g. 0.15); default: always apply argmax"
         ),
     )
-    browse_parser.set_defaults(handler=run_browse)
 
     gradcam_parser = subparsers.add_parser(
         "gradcam",
@@ -319,7 +304,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="directory for the rendered PNG grids",
     )
     add_checkpoint_args(gradcam_parser)
-    gradcam_parser.set_defaults(handler=run_gradcam)
 
     dfr_parser = subparsers.add_parser(
         "dfr",
@@ -399,7 +383,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="delete cached file indexes before scanning the reweighting roots",
     )
-    dfr_parser.set_defaults(handler=run_dfr)
 
     export_parser = subparsers.add_parser(
         "export",
@@ -436,293 +419,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="compare torch vs onnxruntime on a dummy batch after export",
     )
-    export_parser.set_defaults(handler=run_export)
 
     return parser
 
 
-def run_train(args: argparse.Namespace) -> None:
-    device = torch.device(args.device)
-
-    # Pretrained features expect the ImageNet normalization they were trained
-    # with; from-scratch runs compute stats over the train split instead.
-    pretrain_stats = (
-        core.NormStats(
-            mean=IMAGENET_DEFAULT_MEAN,
-            std=IMAGENET_DEFAULT_STD,
-        )
-        if args.pretrain
-        else None
-    )
-    datasets = config.build_datasets(args.data_root)
-    ds, stats = core.build_dataset(
-        split="train",
-        datasets=datasets,
-        device=device,
-        num_workers=args.num_workers,
-        batch_size=args.batch_size,
-        prefetch_factor=args.prefetch_factor,
-        stats=pretrain_stats,
-        invalidate_cache=args.invalidate_cache,
-        erasing_p=args.erasing_p,
-        crop_policy=args.crop_policy,
-    )
-
-    dl = DataLoader(
-        ds,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-        pin_memory=device.type == "cuda",
-        shuffle=True,
-    )
-
-    core.train(
-        device=device,
-        train_loader=dl,
-        seed=args.seed,
-        checkpoint_dir=constants.CHECKPOINT_DIR,
-        stats=stats,
-        epochs=args.epochs,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        drop_rate=args.dropout,
-        drop_path_rate=args.drop_path,
-        pooling=args.pooling,
-        warmup_epochs=args.warmup_epochs,
-        grad_clip=args.grad_clip,
-        ema_horizon_epochs=args.ema_horizon_epochs,
-        use_sam=args.sam,
-        sam_rho=args.sam_rho,
-        backbone_lr_mult=args.backbone_lr_mult,
-        pretrained=args.pretrain,
-        compile_model=not args.no_compile,
-        resume_from=args.resume,
-    )
-
-
-def run_validate(args: argparse.Namespace) -> None:
-    core.validate_checkpoint(
-        checkpoint_path=args.checkpoint,
-        data_root=args.data_root,
-        device=torch.device(args.device),
-        which_weights=args.weights,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
-        max_batches=args.max_batches,
-    )
-
-
-def run_browse(args: argparse.Namespace) -> None:
-    device = torch.device(args.device)
-
-    print(f"Loading {args.checkpoint}  ({args.weights} weights)...")
-    _, model, stats = core.load_checkpoint_model(
-        args.checkpoint,
-        device,
-        weights=args.weights,
-    )
-    print("Model ready.\n")
-
-    root_dir = Path(args.dir)
-    print(f"Scanning {root_dir}...")
-    paths = core.scan_images(root_dir)
-    if not paths:
-        print("No images found.")
-        return
-    print(f"Found {len(paths)} image(s).\n")
-
-    result_queue: queue.Queue[core.InferResult | object] = queue.Queue(maxsize=core.PREFETCH_SIZE)
-    bar = tqdm(total=len(paths), desc="Inferring", unit="img", dynamic_ncols=True)
-
-    worker = threading.Thread(
-        target=core.prefetch_worker,
-        args=(
-            paths,
-            model,
-            device,
-            stats,
-            result_queue,
-            bar,
-            args.abstain_margin,
-        ),
-        daemon=True,
-    )
-    worker.start()
-
-    shown = 0
-    skipped = 0
-    abstained = 0
-    processed = 0
-    while True:
-        item = result_queue.get()
-        if item is core.DONE:
-            break
-
-        assert isinstance(item, core.InferResult)
-        processed += 1
-
-        best_norm = max(item.vote.normalized_probs.values())
-        if not item.error and best_norm >= args.conf_threshold:
-            skipped += 1
-            tqdm.write(
-                f"[{processed}/{len(paths)}]  {item.path.name}  skipped (conf={best_norm:.3f} >= {args.conf_threshold})"
-            )
-            continue
-
-        shown += 1
-        if item.abstained:
-            abstained += 1
-
-        if item.error:
-            tqdm.write(f"[{processed}/{len(paths)}]  {item.path}  ERROR: {item.error}")
-        else:
-            status = "abstain" if item.abstained else f"best={item.best_deg}°"
-            tqdm.write(
-                f"[{processed}/{len(paths)}]  {item.path.name}"
-                f"  {status}"
-                f"  margin={item.vote.margin:.3f}"
-                f"  conf={best_norm:.3f}"
-                f"  norm={{{', '.join(f'{d}°:{p:.3f}' for d, p in sorted(item.vote.normalized_probs.items()))}}}"
-            )
-
-        core.show_result(item, shown, len(paths))
-
-    bar.close()
-    worker.join()
-    print(
-        f"\nDone - displayed {shown} / {len(paths)} image(s)"
-        f"  ({skipped} skipped conf >= {args.conf_threshold},"
-        f" {abstained} abstained on margin)."
-    )
-
-
-def run_gradcam(args: argparse.Namespace) -> None:
-    images = [p for p in args.images if p.is_file()]
-
-    device = torch.device(args.device)
-    _, model, stats = core.load_checkpoint_model(
-        args.checkpoint,
-        device,
-        weights=args.weights,
-    )
-    preprocess = core.build_eval_transform(mean=stats.mean, std=stats.std)
-
-    args.out_dir.mkdir(exist_ok=True)
-
-    for img_path in images:
-        pil = open_rgb(img_path)
-        displays, probs, cams, tensors = core.compute_rotations(model, pil, preprocess, device)
-        angle = core.circular_mean_angle(probs)
-
-        core.visualise(
-            displays,
-            probs,
-            cams,
-            f"{img_path.name} - predicted angle {angle:.1f}°",
-            args.out_dir / f"{img_path.stem}_gradcam.png",
-        )
-        print(f"{img_path.name} - predicted angle {angle:.1f}°")
-
-        guided_cams = core.compute_guided_gradcam_batch(model, tensors, cams)
-        core.visualise_grid(
-            displays,
-            probs,
-            guided_cams,
-            f"{img_path.name} - guided GradCAM - predicted angle {angle:.1f}°",
-            args.out_dir / f"{img_path.stem}_guidedcam.png",
-            colormap="inferno",
-        )
-
-
-def run_dfr(args: argparse.Namespace) -> None:
-    device = torch.device(args.device)
-
-    payload, model, stats = core.load_checkpoint_model(
-        args.checkpoint,
-        device,
-        weights=args.weights,
-        strict_stats=True,
-    )
-    logger.info(
-        "loaded %s (epoch=%s, weights=%s)",
-        args.checkpoint,
-        payload.get("epoch"),
-        args.weights,
-    )
-    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
-    core.freeze_backbone(model, reinit_head=not args.no_reinit_head)
-
-    loader = core.build_head_loader(
-        data_roots=list(args.data_root),
-        stats=stats,
-        device=device,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
-        invalidate_cache=args.invalidate_cache,
-    )
-
-    core.retrain_head(
-        model=model,
-        loader=loader,
-        device=device,
-        epochs=args.epochs,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        grad_clip=args.grad_clip,
-    )
-
-    core.save_dfr_checkpoint(
-        path=args.output,
-        model=model,
-        stats=stats,
-        source_checkpoint=args.checkpoint,
-    )
-
-
-def run_export(args: argparse.Namespace) -> None:
-    device = torch.device(args.device)
-    payload, model, stats = core.load_checkpoint_model(
-        args.checkpoint,
-        device,
-        weights=args.weights,
-    )
-    meta = core.build_onnx_meta(
-        payload,
-        stats,
-        checkpoint=args.checkpoint,
-        weights=args.weights,
-    )
-    logger.info(
-        "loaded %s (epoch=%s, weights=%s, pooling=%s)",
-        args.checkpoint,
-        meta.get("epoch"),
-        args.weights,
-        meta.get("pooling"),
-    )
-
-    out_path: Path = args.out
-    if out_path is None:
-        out_path = args.checkpoint.with_suffix(".onnx")
-
-    core.export_onnx(
-        model=model,
-        out_path=out_path,
-        device=device,
-        opset=args.opset,
-        dynamo=args.dynamo,
-        verify=args.verify,
-    )
-    core.write_onnx_meta(meta, out_path, opset=args.opset, dynamo=args.dynamo)
-    logger.info("done: %s (%.1f MiB)", out_path, out_path.stat().st_size / (1024 * 1024))
-
-
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    setup_logging(constants.LOGS_DIR)
-    args.handler(args)
+    # Import the training stack only when a subcommand runs, so `cli.py --help`
+    # stays free of torch/timm.
+    import core
+
+    core.run(args)
 
 
 if __name__ == "__main__":

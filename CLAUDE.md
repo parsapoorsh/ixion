@@ -27,11 +27,12 @@ train loop (would multiply step cost); ranking is eval/infer only.
 
 ```
 src/
-  cli.py         — entry point: `train` / `finetune` / `validate` / `browse` /
-                   `gradcam` / `dfr` / `export` subcommands + argument parsing
+  cli.py         — argument parser for `train` / `finetune` / `validate` /
+                   `browse` / `gradcam` / `dfr` / `export`; imports core
+                   only after parsing so `--help` stays torch-free
   core.py        — data pipeline, transforms, stats, training loop, checkpoint
                    loading, validation, four-view inference, GradCAM, browse,
-                   DFR head retraining, ONNX export
+                   DFR head retraining, ONNX export, and the subcommand bodies
   constants.py   — paths, sizes, rotation list; no imports from config so models can depend on it safely
   config.py      — DatasetSpec + build_datasets(root) for the ImageNet+COCO layout
   model/
