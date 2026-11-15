@@ -18,7 +18,7 @@ Training data is ImageNet + COCO (general-purpose image corpora), which gives th
 model diverse texture/content without needing a labelled rotation dataset. Each base
 image yields 4 samples: 1 upright (label 1) + 3 rotated (label 0).
 
-**Product metric:** `group4_acc` (validator) — for each base image, argmax over the
+**Product metric:** `group4_acc` (`cli.py validate`) — for each base image, argmax over the
 four rotation scores should pick the upright view. Prefer this over binary single-view
 accuracy when comparing checkpoints. Multi-view ranking **loss** is not used in the
 train loop (would multiply step cost); ranking is eval/infer only.
@@ -27,19 +27,18 @@ train loop (would multiply step cost); ranking is eval/infer only.
 
 ```
 src/
-  cli.py         — entry point: `train` / `finetune` subcommands, lazily imports the training stack
-  train.py       — training loop (cosine-with-warmup LR, gradient clipping, checkpoint saving)
-  validator.py   — standalone CLI to eval a checkpoint against the val split
-  infer.py       — single-image inference (returns P(upright) as a float)
-  gradcam.py     — visualise model attention at all 4 rotations via GradCAM
-  datasets.py    — DatasetSpec, ImageLoader, RotationPairDataset, build_dataset
-  builders.py    — torchvision transform factories (train/eval)
-  stats.py       — dataset mean/std computation with JSON caching
+  cli.py         — entry point: `train` / `finetune` / `validate` / `browse` /
+                   `gradcam` / `dfr` / `export` subcommands + argument parsing
+  core.py        — data pipeline, transforms, stats, training loop, checkpoint
+                   loading, validation, four-view inference, GradCAM, browse,
+                   DFR head retraining, ONNX export
   constants.py   — paths, sizes, rotation list; no imports from config so models can depend on it safely
-  config.py      — build_datasets(root) for the ImageNet+COCO layout
-  models/
+  config.py      — DatasetSpec + build_datasets(root) for the ImageNet+COCO layout
+  model/
     rotation.py  — RotationModel (EfficientNet-B0 + LayerNorm/Dropout/Linear head)
+    attention.py — SpatialAttentionPool
     ema.py       — ModelEMA (exponential moving average shadow)
+    sam.py       — SAM optimizer + BatchNorm running-stat helpers
   utils/
     image_io.py  — PIL open with JXL plugin + EXIF orientation + truncated-image tolerance
     index.py     — recursive file scanner with compressed JSON cache
@@ -48,7 +47,7 @@ src/
 
 ## Running
 
-All scripts are run from the project root with `venv/bin/python src/<script>.py`.
+All commands are run from the project root with `venv/bin/python src/cli.py <subcommand>`.
 
 **Train:**
 ```
@@ -73,7 +72,7 @@ from-scratch schedule defaults.
 
 **Validate a checkpoint:**
 ```
-venv/bin/python src/validator.py \
+venv/bin/python src/cli.py validate \
     --checkpoint checkpoints/epoch_010.pt \
     --data-root /path/to/datasets \
     --device cuda --batch-size 256 --num-workers 4 \
@@ -84,7 +83,7 @@ incorrect 4-way picks (same forward count as binary val).
 
 **Browse a directory (optional margin abstain):**
 ```
-venv/bin/python src/browse.py \
+venv/bin/python src/cli.py browse \
     --dir /path/to/photos \
     --checkpoint checkpoints/epoch_010.pt \
     --device cuda --abstain-margin 0.15
@@ -92,14 +91,29 @@ venv/bin/python src/browse.py \
 
 **GradCAM visualisation:**
 ```
-venv/bin/python src/gradcam.py \
+venv/bin/python src/cli.py gradcam \
     --checkpoint checkpoints/epoch_010.pt \
     --device cuda --images examples/*.jpg --out-dir gradcam_out
 ```
 
+**DFR head retraining (frozen features, in-domain images):**
+```
+venv/bin/python src/cli.py dfr \
+    --checkpoint checkpoints/epoch_029.pt \
+    --data-root /path/to/hard_images \
+    --device cuda --batch-size 256 --num-workers 8 --prefetch-factor 4
+```
+
+**ONNX export:**
+```
+venv/bin/python src/cli.py export \
+    --checkpoint checkpoints/epoch_010.pt \
+    --out checkpoints/epoch_010.onnx
+```
+
 ## Key design decisions
 
-- **From scratch by default.** `train.py` builds the backbone with `pretrained=False`.
+- **From scratch by default.** `core.train` builds the backbone with `pretrained=False`.
   `--pretrain` opts into timm's ImageNet weights, and the `finetune` subcommand is a
   short-schedule preset over them (see Running).
 - **Label-safe augmentation only.** No spatial flips/rotations (would corrupt the
@@ -121,7 +135,8 @@ venv/bin/python src/gradcam.py \
 
 ## Dataset paths
 
-Pass the datasets root with `--data-root` on `cli.py` / `validator.py`.
+Pass the datasets root with `--data-root` on the `train`, `finetune`, and
+`validate` subcommands of `cli.py`.
 `config.build_datasets(root)` expands the standard ImageNet 2017 + COCO 2017
 layout under it:
 
