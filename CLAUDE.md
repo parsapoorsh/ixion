@@ -27,6 +27,7 @@ train loop (would multiply step cost); ranking is eval/infer only.
 
 ```
 src/
+  cli.py         — entry point: `train` / `finetune` subcommands, lazily imports the training stack
   train.py       — training loop (cosine-with-warmup LR, gradient clipping, checkpoint saving)
   validator.py   — standalone CLI to eval a checkpoint against the val split
   infer.py       — single-image inference (returns P(upright) as a float)
@@ -51,7 +52,7 @@ All scripts are run from the project root with `venv/bin/python src/<script>.py`
 
 **Train:**
 ```
-venv/bin/python src/train.py \
+venv/bin/python src/cli.py train \
     --data-root /path/to/datasets \
     --device cuda --batch-size 256 --num-workers 8 \
     --prefetch-factor 4 --seed 0
@@ -59,15 +60,16 @@ venv/bin/python src/train.py \
 
 **Fine-tune (ImageNet-pretrained backbone, short schedule):**
 ```
-venv/bin/python src/train.py \
+venv/bin/python src/cli.py finetune \
     --data-root /path/to/datasets \
     --device cuda --batch-size 256 --num-workers 8 \
-    --prefetch-factor 4 --seed 0 --fine-tune
+    --prefetch-factor 4 --seed 0
 ```
-`--fine-tune` implies `--pretrain` (timm ImageNet weights + ImageNet mean/std) and
-sets a 5-epoch preset (peak `--lr 1e-3`, `--backbone-lr-mult 0.1`, `--warmup-epochs 0.5`,
-`--weight-decay 0.05`). Any flag passed explicitly overrides the preset; `--pretrain`
-alone uses the same pretrained init but keeps the from-scratch schedule defaults.
+The `finetune` subcommand implies `--pretrain` (timm ImageNet weights + ImageNet
+mean/std) and sets a 5-epoch preset (peak `--lr 1e-3`, `--backbone-lr-mult 0.1`,
+`--warmup-epochs 0.5`, `--weight-decay 0.05`). Any flag passed explicitly overrides
+the preset; `train --pretrain` alone uses the same pretrained init but keeps the
+from-scratch schedule defaults.
 
 **Validate a checkpoint:**
 ```
@@ -98,8 +100,8 @@ venv/bin/python src/gradcam.py \
 ## Key design decisions
 
 - **From scratch by default.** `train.py` builds the backbone with `pretrained=False`.
-  `--pretrain` opts into timm's ImageNet weights, and `--fine-tune` is a short-schedule
-  preset over them (see Running).
+  `--pretrain` opts into timm's ImageNet weights, and the `finetune` subcommand is a
+  short-schedule preset over them (see Running).
 - **Label-safe augmentation only.** No spatial flips/rotations (would corrupt the
   binary label). Train uses ColorJitter, RandomGrayscale, and RandomErasing after
   normalize; backbone uses stochastic depth (`drop_path_rate=0.1`).
@@ -119,7 +121,7 @@ venv/bin/python src/gradcam.py \
 
 ## Dataset paths
 
-Pass the datasets root with `--data-root` on `train.py` / `validator.py`.
+Pass the datasets root with `--data-root` on `cli.py` / `validator.py`.
 `config.build_datasets(root)` expands the standard ImageNet 2017 + COCO 2017
 layout under it:
 
