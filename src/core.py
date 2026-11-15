@@ -64,7 +64,8 @@ WeightName = Literal["ema", "raw"]
 # Normalization stats
 # ---------------------------------------------------------------------------
 
-MeanStd = tuple[tuple[float, float, float], tuple[float, float, float]]
+Stats = tuple[float, float, float]
+MeanStd = tuple[Stats, Stats]
 
 
 def compute_stats_chunk(paths: Sequence[Path]) -> tuple[np.ndarray, np.ndarray, int, int]:
