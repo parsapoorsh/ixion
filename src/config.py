@@ -7,8 +7,11 @@ directory exists.
 """
 
 from pathlib import Path
+from logging import getLogger
 
 from datasets import DatasetSpec
+
+logger = getLogger(__name__)
 
 # ImageNet normalization constants - left here as a convenience for anyone
 # who wants to pin a DatasetSpec to fixed stats instead of computing them.
@@ -32,6 +35,7 @@ def build_datasets(root: Path) -> list[DatasetSpec]:
 
     imagenet_path = root / "ILSVRC2017"
     if imagenet_path.exists():
+        logger.info(f"found ImageNet2017 at: {imagenet_path}")
         result.append(
             DatasetSpec(
                 name="imagenet",
@@ -47,6 +51,7 @@ def build_datasets(root: Path) -> list[DatasetSpec]:
 
     coco_path = root / "coco"
     if coco_path.exists():
+        logger.info(f"found coco at: {coco_path}")
         result.append(
             DatasetSpec(
                 name="coco",
