@@ -34,13 +34,7 @@ FINETUNE_DEFAULTS = {
 }
 
 
-def add_data_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--data-root",
-        type=Path,
-        required=True,
-        help=("root directory that contains the ImageNet 2017 and COCO 2017 layout (see config.build_dataset_specs)"),
-    )
+def add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--device",
         type=str,
@@ -64,6 +58,28 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
         type=int,
         required=True,
         help="batches each worker keeps queued ahead of the consumer",
+    )
+
+
+def add_data_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--data-root",
+        type=Path,
+        required=True,
+        help=("root directory that contains the ImageNet 2017 and COCO 2017 layout (see config.build_dataset_specs)"),
+    )
+    add_runtime_args(p)
+
+
+def add_optional_device(
+    p: argparse.ArgumentParser,
+    default: str = "cuda",
+    help_text: str = "torch device string",
+) -> None:
+    p.add_argument(
+        "--device",
+        default=default,
+        help=help_text,
     )
 
 
@@ -256,11 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="root directory to scan recursively for images",
     )
     add_checkpoint_args(browse_parser)
-    browse_parser.add_argument(
-        "--device",
-        default="cuda",
-        help="torch device string",
-    )
+    add_optional_device(browse_parser)
     browse_parser.add_argument(
         "--conf-threshold",
         type=float,
@@ -285,11 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Show the image at all four rotations with GradCAM overlays.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    gradcam_parser.add_argument(
-        "--device",
-        default="cuda",
-        help="torch device string",
-    )
+    add_optional_device(gradcam_parser)
     gradcam_parser.add_argument(
         "--images",
         type=Path,
@@ -325,30 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=constants.CHECKPOINT_DIR / "dfr_head.pt",
         help="where to write the DFR-retrained checkpoint",
     )
-    dfr_parser.add_argument(
-        "--device",
-        type=str,
-        required=True,
-        help="torch device string (e.g. 'cuda', 'cuda:0', 'cpu')",
-    )
-    dfr_parser.add_argument(
-        "--batch-size",
-        type=int,
-        required=True,
-        help="images per step",
-    )
-    dfr_parser.add_argument(
-        "--num-workers",
-        type=int,
-        required=True,
-        help="DataLoader worker processes for image decoding",
-    )
-    dfr_parser.add_argument(
-        "--prefetch-factor",
-        type=int,
-        required=True,
-        help="batches each worker keeps queued ahead of the consumer",
-    )
+    add_runtime_args(dfr_parser)
     dfr_parser.add_argument(
         "--epochs",
         type=int,
@@ -397,11 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="output .onnx path (default: checkpoint with .onnx suffix)",
     )
-    export_parser.add_argument(
-        "--device",
-        default="cpu",
-        help="torch device used for the export trace",
-    )
+    add_optional_device(export_parser, default="cpu", help_text="torch device used for the export trace")
     export_parser.add_argument(
         "--opset",
         type=int,

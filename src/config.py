@@ -35,12 +35,11 @@ def build_dataset_specs(root: Path) -> list[DatasetSpec]:
           ILSVRC2017/Data/CLS-LOC/{train,test,val}/
           coco/{train2017,test2017,val2017}/
     """
-    root = Path(root)
     result: list[DatasetSpec] = []
 
     imagenet_path = root / "ILSVRC2017"
     if imagenet_path.exists():
-        logger.info(f"found ImageNet2017 at: {imagenet_path}")
+        logger.info("found ImageNet2017 at: %s", imagenet_path)
         result.append(
             {
                 "name": "imagenet",
@@ -56,7 +55,7 @@ def build_dataset_specs(root: Path) -> list[DatasetSpec]:
 
     coco_path = root / "coco"
     if coco_path.exists():
-        logger.info(f"found coco at: {coco_path}")
+        logger.info("found coco at: %s", coco_path)
         result.append(
             {
                 "name": "coco",

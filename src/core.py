@@ -26,7 +26,6 @@ import time
 import warnings
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
-from dataclasses import dataclass
 from multiprocessing.context import BaseContext
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
@@ -58,7 +57,8 @@ logger = logging.getLogger(__name__)
 N_ROTS = len(constants.ROTATIONS)
 
 # Checkpoint keys holding the two weight sets: EMA shadow and raw weights.
-WEIGHT_KEYS = {"ema": "ema", "raw": "model"}
+WeightName = Literal["ema", "raw"]
+WEIGHT_KEYS: dict[WeightName, str] = {"ema": "ema", "raw": "model"}
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +129,7 @@ def iter_stats_results(
     prefetch_factor: int,
 ) -> Iterable[tuple[np.ndarray, np.ndarray, int, int]]:
     if worker_count <= 1:
-        for chunk in chunks:
-            yield compute_stats_chunk(chunk)
+        yield from map(compute_stats_chunk, chunks)
         return
 
     max_pending = max(
@@ -305,10 +304,15 @@ def build_train_transform(
     return T.Compose(transforms)
 
 
-eval_preprocess = T.Compose(
+display_preprocess = T.Compose(
     [
         T.Resize(constants.RESIZE_SIZE),
         T.CenterCrop(constants.INPUT_SIZE),
+    ]
+)
+eval_preprocess = T.Compose(
+    [
+        *display_preprocess.transforms,
         T.ToTensor(),
     ]
 )
@@ -331,59 +335,28 @@ def build_eval_transform(
 # ---------------------------------------------------------------------------
 
 
-class ImageLoader(Dataset):
-    """Loads images by index from a path source, optionally applying a transform.
+class RotationPairDataset(Dataset):
+    """Wraps a file list so each item is (image, is_upright_label).
 
-    Without a transform, returns a ``PIL.Image`` (used by the rotation datasets).
-    With a transform, returns the transformed tensor.
-
-    ``files`` only needs to support ``__len__`` and ``__getitem__(idx)`` -
-    anything sequence-like works (a list, an ``index.PathList`` view over a
-    trie, etc.). We don't require a materialised list so the caller can
-    keep the index in a compact representation.
+    For N images, len = 4 * N. Sample i decomposes to img_idx = i // 4 and
+    rot_idx = i % 4. The label is 1.0 when rot_idx == 0 (upright), else 0.0.
     """
 
-    def __init__(
-        self,
-        files: Sequence[Path],
-        transform: Callable | None = None,
-    ) -> None:
+    def __init__(self, files: Sequence[Path], transform: Callable) -> None:
         self.files = files
         self.transform = transform
 
     def __len__(self) -> int:
-        return len(self.files)
-
-    def __getitem__(self, idx: int) -> Image.Image | torch.Tensor:
-        img = open_rgb(self.files[idx])
-        if self.transform is not None:
-            return self.transform(img)
-        return img
-
-
-class RotationPairDataset(Dataset):
-    """Wraps a base image source so each item is (image, is_upright_label).
-
-    For a base of N images, len = 4 * N. Sample i decomposes to
-    img_idx = i // 4 and rot_idx = i % 4. The label is 1.0 when rot_idx == 0
-    (upright), else 0.0.
-    """
-
-    def __init__(self, base: ImageLoader, transform: Callable) -> None:
-        self.base = base
-        self.transform = transform
-
-    def __len__(self) -> int:
-        return len(self.base) * len(constants.ROTATIONS)
+        return len(self.files) * len(constants.ROTATIONS)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, float]:
         img_idx, rot_idx = divmod(idx, len(constants.ROTATIONS))
         # Fail loudly on unreadable files: wrapping around (the previous
         # behaviour) duplicated samples and skewed validation metrics.
         try:
-            img = self.base[img_idx]
+            img = open_rgb(self.files[img_idx])
         except (UnidentifiedImageError, OSError) as exc:
-            raise RuntimeError(f"unreadable image {self.base.files[img_idx]}: {exc}") from exc
+            raise RuntimeError(f"unreadable image {self.files[img_idx]}: {exc}") from exc
         tensor = self.transform(img)
         if rot_idx != 0:
             tensor = TF.rotate(
@@ -463,10 +436,7 @@ def build_dataset(
         if split == "train"
         else build_eval_transform(mean=mean, std=std)
     )
-    return RotationPairDataset(
-        base=ImageLoader(files=files),
-        transform=transform,
-    ), mean_std
+    return RotationPairDataset(files=files, transform=transform), mean_std
 
 
 def build_loader(
@@ -496,7 +466,7 @@ def build_loader(
 def load_checkpoint_model(
     checkpoint: Path,
     device: torch.device,
-    weights: str = "ema",
+    weights: WeightName = "ema",
     strict_stats: bool = False,
 ) -> tuple[dict, RotationModel, MeanStd]:
     """Load one weight set and the normalization stats from a checkpoint.
@@ -513,7 +483,7 @@ def load_checkpoint_model(
     if raw_stats:
         mean_std = stats_from_dict(raw_stats)
     elif strict_stats:
-        raise KeyError("checkpoint has no 'stats'; DFR needs the normalization the backbone was trained with")
+        raise KeyError("checkpoint has no 'stats'; normalization cannot be inferred")
     else:
         cache_file = constants.INDEX_CACHE_DIR / "stats_train.json"
         if not cache_file.exists():
@@ -521,6 +491,14 @@ def load_checkpoint_model(
         mean_std = stats_from_dict(json.loads(cache_file.read_text()))
         logger.info("loaded stats from cache file %s", cache_file)
 
+    logger.info(
+        "loaded %s (epoch=%s, ema_step=%s, weights=%s, pooling=%s)",
+        checkpoint,
+        payload.get("epoch"),
+        payload.get("ema_step"),
+        weights,
+        payload.get("pooling", "avg"),
+    )
     model = RotationModel(
         pretrained=False,
         pooling=payload.get("pooling", "avg"),
@@ -600,8 +578,7 @@ def predict_rotations(
     model: nn.Module,
     img: Image.Image,
     device: torch.device,
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
+    preprocess: T.Compose,
 ) -> RotationVote:
     """Score four orientations with the same geometry as training.
 
@@ -609,12 +586,7 @@ def predict_rotations(
     tensor (see ``RotationPairDataset``). Inference matches that order so
     checkpoints are evaluated under the distribution they saw.
     """
-    transform = build_eval_transform(
-        mean=mean,
-        std=std,
-    )
-    base = transform(img)
-    batch = stack_rotation_views(base, device)
+    batch = stack_rotation_views(preprocess(img), device)
 
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         logits = model(batch)
@@ -622,7 +594,7 @@ def predict_rotations(
 
     order = np.argsort(probs)
     top1_i = int(order[-1])
-    top2_i = int(order[-2]) if len(order) > 1 else top1_i
+    top2_i = int(order[-2])
     return {
         "probs": {deg: float(p) for deg, p in zip(constants.ROTATIONS, probs, strict=True)},
         "best_deg": int(constants.ROTATIONS[top1_i]),
@@ -633,54 +605,6 @@ def predict_rotations(
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class EpochStats:
-    loss_sum: float = 0.0
-    correct: int = 0
-    seen: int = 0
-    grad_norm_sum: float = 0.0
-    grad_steps: int = 0
-
-    def merge(
-        self,
-        loss_sum: float,
-        correct: int,
-        grad_norm_sum: float,
-        n: int,
-        steps: int,
-    ) -> None:
-        self.loss_sum += loss_sum
-        self.correct += correct
-        self.seen += n
-        self.grad_norm_sum += grad_norm_sum
-        self.grad_steps += steps
-
-    def merge_buffers(
-        self,
-        loss_buf: torch.Tensor,
-        correct_buf: torch.Tensor,
-        grad_norm_buf: torch.Tensor,
-        n: int,
-        steps: int,
-    ) -> tuple[float, float, float]:
-        """Flush the GPU-side accumulators into these stats; return window means."""
-        loss_sum = loss_buf.item()
-        correct = int(correct_buf.item())
-        grad_norm_sum = grad_norm_buf.item()
-        self.merge(
-            loss_sum=loss_sum,
-            correct=correct,
-            grad_norm_sum=grad_norm_sum,
-            n=n,
-            steps=steps,
-        )
-        return (
-            loss_sum / max(1, n),
-            correct / max(1, n),
-            grad_norm_sum / max(1, steps),
-        )
 
 
 def move_batch(
@@ -746,14 +670,11 @@ def can_compile_model() -> tuple[bool, str | None]:
     if shutil.which("gcc") is None:
         return False, "gcc is not available; install it with sudo apt install build-essential"
 
-    def python_headers_available() -> bool:
-        for key in ("include", "platinclude"):
-            include_dir = sysconfig.get_path(key)
-            if include_dir is not None and (Path(include_dir) / "Python.h").exists():
-                return True
-        return False
-
-    if not python_headers_available():
+    include_dirs = (sysconfig.get_path(key) for key in ("include", "platinclude"))
+    if not any(
+        include_dir is not None and (Path(include_dir) / "Python.h").exists()
+        for include_dir in include_dirs
+    ):
         version = sysconfig.get_python_version()
         return False, (
             f"Python.h is not available under {sysconfig.get_path('include')}; "
@@ -802,21 +723,19 @@ def train(
 
     # Peek at the checkpoint before building the model so resumes honour the
     # pooling variant it was trained with (attention vs global average).
-    resume_payload = None
-    if resume_from is not None:
-        resume_payload = torch.load(resume_from, map_location=device, weights_only=False)
+    resume_payload = (
+        torch.load(resume_from, map_location=device, weights_only=False) if resume_from is not None else None
+    )
 
     # The checkpoint's own values win over this run's flags; say so when they
     # disagree instead of silently dropping what the user asked for.
-    resume_pooling = None
-    if resume_payload is not None:
-        resume_pooling = str(resume_payload["pooling"])
-        if resume_pooling != pooling:
-            logger.info(
-                "resuming with the checkpoint's pooling=%s (ignoring --pooling %s)",
-                resume_pooling,
-                pooling,
-            )
+    resume_pooling = str(resume_payload["pooling"]) if resume_payload is not None else None
+    if resume_pooling is not None and resume_pooling != pooling:
+        logger.info(
+            "resuming with the checkpoint's pooling=%s (ignoring --pooling %s)",
+            resume_pooling,
+            pooling,
+        )
     if pretrained and resume_payload is not None:
         logger.info("ignoring --pretrain: the resume overwrites every weight")
 
@@ -827,7 +746,7 @@ def train(
         drop_path_rate=drop_path_rate,
         pooling=pooling if resume_pooling is None else resume_pooling,
     ).to(device)
-    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
+    model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
     ema = ModelEMA(
         model,
         decay=ema_decay,
@@ -868,26 +787,25 @@ def train(
     saved_schedule_warmup_steps = None
     if resume_from is not None:
         assert resume_payload is not None
-        payload = resume_payload
-        model.load_state_dict(payload["model"])
+        model.load_state_dict(resume_payload["model"])
 
-        ema.module.load_state_dict(payload["ema"])
-        ema.step = int(payload["ema_step"])
+        ema.module.load_state_dict(resume_payload["ema"])
+        ema.step = int(resume_payload["ema_step"])
 
         # Saved state is plain base-optimizer (AdamW) state; load it into the
         # base so resume works whether or not SAM wraps it this run.
         base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
-        base_optimizer.load_state_dict(payload["optimizer"])
+        base_optimizer.load_state_dict(resume_payload["optimizer"])
 
         # map_location=device pulls the saved ByteTensors to CUDA, but
         # set_rng_state_all requires CPU ByteTensors - move them back.
-        torch.set_rng_state(payload["rng_cpu"].cpu())
-        if payload["rng_cuda"] is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in payload["rng_cuda"]])
+        torch.set_rng_state(resume_payload["rng_cpu"].cpu())
+        if resume_payload["rng_cuda"] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in resume_payload["rng_cuda"]])
 
-        start_epoch = int(payload["epoch"]) + 1
-        saved_schedule_total_steps = int(payload["schedule_total_steps"])
-        saved_schedule_warmup_steps = int(payload["schedule_warmup_steps"])
+        start_epoch = int(resume_payload["epoch"]) + 1
+        saved_schedule_total_steps = int(resume_payload["schedule_total_steps"])
+        saved_schedule_warmup_steps = int(resume_payload["schedule_warmup_steps"])
         logger.info(
             "resumed from %s (next epoch=%d, ema_step=%d)",
             resume_from,
@@ -940,7 +858,7 @@ def train(
     for epoch in range(start_epoch, epochs):
         model.train()
         epoch_start = time.monotonic()
-        epoch_stats = EpochStats()
+        seen = 0
 
         pbar = tqdm(
             train_loader,
@@ -949,8 +867,8 @@ def train(
             leave=False,
             file=sys.stdout,
         )
-        # GPU-side accumulators flushed to epoch_stats at LOG_STEP boundaries
-        # and once at epoch end, so .item() doesn't sync every step.
+        # GPU-side accumulators flushed at LOG_STEP boundaries so .item()
+        # doesn't sync every step.
         loss_buf = torch.zeros((), device=device)
         correct_buf = torch.zeros((), device=device, dtype=torch.long)
         gn_buf = torch.zeros((), device=device)
@@ -1002,17 +920,14 @@ def train(
             loss_buf += loss.detach() * n
             correct_buf += (preds == labels).sum()
             gn_buf += grad_norm.detach()
+            seen += n
             pending_n += n
             pending_steps += 1
 
             if global_step % constants.LOG_STEP == 0:
-                window_loss, window_acc, window_gn = epoch_stats.merge_buffers(
-                    loss_buf,
-                    correct_buf,
-                    gn_buf,
-                    n=pending_n,
-                    steps=pending_steps,
-                )
+                window_loss = loss_buf.item() / max(1, pending_n)
+                window_acc = int(correct_buf.item()) / max(1, pending_n)
+                window_gn = gn_buf.item() / max(1, pending_steps)
                 loss_buf.zero_()
                 correct_buf.zero_()
                 gn_buf.zero_()
@@ -1038,21 +953,12 @@ def train(
                 )
             global_step += 1
 
-        if pending_steps > 0:
-            epoch_stats.merge_buffers(
-                loss_buf,
-                correct_buf,
-                gn_buf,
-                n=pending_n,
-                steps=pending_steps,
-            )
-
         dt = time.monotonic() - epoch_start
         logger.info(
             "epoch %d done in %.0fs, throughput %.1f img/s",
             epoch,
             dt,
-            epoch_stats.seen / dt,
+            seen / dt,
         )
 
         ckpt = checkpoint_dir / f"epoch_{epoch:03d}.pt"
@@ -1100,12 +1006,6 @@ def run_validation(
 
     # Carry logits across batch boundaries so batch_size need not be % 4.
     logit_buf: list[torch.Tensor] = []
-    group4_correct = 0
-    group4_total = 0
-    margin_ok_sum = 0.0
-    margin_bad_sum = 0.0
-    margin_ok_n = 0
-    margin_bad_n = 0
     margins: list[float] = []
     corrects: list[bool] = []
 
@@ -1123,26 +1023,17 @@ def run_validation(
             logit_buf.clear()
             # Training target: rot 0 is upright. Product pick: argmax logit.
             probs = chunk.softmax(dim=0)
-            pred = int(probs.argmax().item())
             target = torch.zeros(1, dtype=torch.long, device=device)
             total_loss += float(loss_fn(chunk.unsqueeze(0), target).item())
             # top1 - top2 margin on four-view softmax probabilities.
             sorted_p, _ = probs.sort(descending=True)
             margin = float((sorted_p[0] - sorted_p[1]).item())
-            ok = pred == 0
+            ok = int(probs.argmax().item()) == 0
             margins.append(margin)
             corrects.append(ok)
-            group4_total += 1
-            if ok:
-                group4_correct += 1
-                margin_ok_sum += margin
-                margin_ok_n += 1
-            else:
-                margin_bad_sum += margin
-                margin_bad_n += 1
 
         if batch_idx % constants.LOG_STEP == 0:
-            g4 = group4_correct / max(1, group4_total)
+            g4 = sum(corrects) / max(1, len(corrects))
             logger.info(
                 "validation batch %d/%d group4_acc=%.4f",
                 batch_idx,
@@ -1174,10 +1065,13 @@ def run_validation(
                 n,
             )
 
+    group4_total = len(corrects)
     loss = total_loss / max(1, group4_total)
-    group4_acc = group4_correct / max(1, group4_total)
-    mean_margin_ok = margin_ok_sum / max(1, margin_ok_n)
-    mean_margin_bad = margin_bad_sum / max(1, margin_bad_n)
+    group4_acc = sum(corrects) / max(1, group4_total)
+    margin_ok = [m for m, ok in zip(margins, corrects, strict=True) if ok]
+    margin_bad = [m for m, ok in zip(margins, corrects, strict=True) if not ok]
+    mean_margin_ok = sum(margin_ok) / max(1, len(margin_ok))
+    mean_margin_bad = sum(margin_bad) / max(1, len(margin_bad))
 
     return (
         loss,
@@ -1192,7 +1086,7 @@ def validate_checkpoint(
     checkpoint_path: Path,
     data_root: Path,
     device: torch.device,
-    which_weights: str,
+    which_weights: WeightName,
     batch_size: int,
     num_workers: int,
     prefetch_factor: int,
@@ -1204,26 +1098,18 @@ def validate_checkpoint(
     checkpoint to load. Helpful for separating "EMA shadow is bad" from
     "validator code is bad".
     """
-    payload, model, (mean, std) = load_checkpoint_model(
+    _, model, mean_std = load_checkpoint_model(
         checkpoint_path,
         device,
         weights=which_weights,
     )
-    logger.info(
-        "loaded %s (epoch=%s, ema_step=%s, weights=%s)",
-        checkpoint_path,
-        payload.get("epoch"),
-        payload.get("ema_step"),
-        which_weights,
-    )
-
     val_ds, _ = build_dataset(
         split="val",
         datasets=build_dataset_specs(data_root),
         num_workers=num_workers,
         batch_size=batch_size,
         prefetch_factor=prefetch_factor,
-        mean_std=(mean, std),
+        mean_std=mean_std,
     )
     val_loader = build_loader(
         val_ds,
@@ -1349,7 +1235,7 @@ def retrain_head(
 
 
 class GradCAM:
-    """GradCAM and guided-GradCAM rendering for one loaded model."""
+    """GradCAM and guided-GradCAM heatmap computation for one loaded model."""
 
     def __init__(
         self,
@@ -1361,12 +1247,6 @@ class GradCAM:
         self.model = model
         self.device = device
         self.preprocess = build_eval_transform(mean=mean, std=std)
-        self.crop = T.Compose(
-            [
-                T.Resize(constants.RESIZE_SIZE),
-                T.CenterCrop(constants.INPUT_SIZE),
-            ]
-        )
 
     def compute(self, tensor: torch.Tensor) -> tuple[list[np.ndarray], list[float]]:
         """Run one forward+backward and return per-sample GradCAM heatmaps
@@ -1401,7 +1281,7 @@ class GradCAM:
         cam_np = (cam / cam_max).cpu().detach().float().numpy()
 
         logits = output.detach().cpu().float().reshape(-1).tolist()
-        return [cam_np[i] for i in range(cam_np.shape[0])], logits
+        return list(cam_np), logits
 
     def guided(self, tensor: torch.Tensor, cams: list[np.ndarray]) -> list[np.ndarray]:
         """Guided backprop gated by the supplied GradCAM heatmaps.
@@ -1478,7 +1358,7 @@ class GradCAM:
         pil_img: Image.Image,
     ) -> tuple[list[Image.Image], list[float], list[np.ndarray], torch.Tensor]:
         # Display images: resize + center-crop, then PIL-rotate each view.
-        crop = self.crop(pil_img)
+        crop = display_preprocess(pil_img)
         displays = [crop.rotate(a) if a != 0 else crop for a in constants.ROTATIONS]
 
         # Model input: transform once (resize/crop/to_tensor/normalize), then
@@ -1571,8 +1451,7 @@ def prefetch_worker(
     paths: list[Path],
     model: RotationModel,
     device: torch.device,
-    mean: tuple[float, float, float],
-    std: tuple[float, float, float],
+    preprocess: T.Compose,
     out: queue.Queue,
     bar: tqdm,
     abstain_margin: float | None,
@@ -1587,16 +1466,14 @@ def prefetch_worker(
                 model=model,
                 img=original,
                 device=device,
-                mean=mean,
-                std=std,
+                preprocess=preprocess,
             )
-            best_deg = vote["best_deg"]
             abstained = abstain_margin is not None and vote["margin"] < abstain_margin
             # Low margin: keep original (no auto-rotate).
             if abstained:
                 corrected = original
             else:
-                corrected = original.rotate(best_deg, expand=True)
+                corrected = original.rotate(vote["best_deg"], expand=True)
             result: InferResult = {
                 "path": path,
                 "corrected": corrected,
@@ -1689,22 +1566,18 @@ def export_onnx(
     verify: bool,
 ) -> None:
     """Trace ``model`` to ONNX with a dynamic batch axis."""
-    size = constants.INPUT_SIZE
-    dummy = torch.randn(1, 3, size, size, device=device)
-
+    dummy = torch.randn(1, 3, constants.INPUT_SIZE, constants.INPUT_SIZE, device=device)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    dynamic_axes = {
-        INPUT_NAME: {0: "batch"},
-        OUTPUT_NAME: {0: "batch"},
-    }
 
     export_kwargs: dict = {
         "input_names": [INPUT_NAME],
         "output_names": [OUTPUT_NAME],
         "opset_version": opset,
         "do_constant_folding": True,
-        "dynamic_axes": dynamic_axes,
+        "dynamic_axes": {
+            INPUT_NAME: {0: "batch"},
+            OUTPUT_NAME: {0: "batch"},
+        },
         "dynamo": dynamo,
     }
 
@@ -1773,15 +1646,10 @@ def run_train(args: argparse.Namespace) -> None:
 
     # Pretrained features expect the ImageNet normalization they were trained
     # with; from-scratch runs compute stats over the train split instead.
-    pretrain_mean_std = (
-        (IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
-        if args.pretrain
-        else None
-    )
-    datasets = build_dataset_specs(args.data_root)
+    pretrain_mean_std = (IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD) if args.pretrain else None
     ds, (mean, std) = build_dataset(
         split="train",
-        datasets=datasets,
+        datasets=build_dataset_specs(args.data_root),
         num_workers=args.num_workers,
         batch_size=args.batch_size,
         prefetch_factor=args.prefetch_factor,
@@ -1847,6 +1715,7 @@ def run_browse(args: argparse.Namespace) -> None:
         device,
         weights=args.weights,
     )
+    preprocess = build_eval_transform(mean=mean, std=std)
     print("Model ready.\n")
 
     root_dir = Path(args.dir)
@@ -1866,8 +1735,7 @@ def run_browse(args: argparse.Namespace) -> None:
             paths,
             model,
             device,
-            mean,
-            std,
+            preprocess,
             result_queue,
             bar,
             args.abstain_margin,
@@ -1967,26 +1835,18 @@ def run_gradcam(args: argparse.Namespace) -> None:
 def run_dfr(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
 
-    payload, model, (mean, std) = load_checkpoint_model(
+    _, model, (mean, std) = load_checkpoint_model(
         args.checkpoint,
         device,
         weights=args.weights,
         strict_stats=True,
     )
-    logger.info(
-        "loaded %s (epoch=%s, weights=%s)",
-        args.checkpoint,
-        payload.get("epoch"),
-        args.weights,
-    )
-    model = model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
+    model.to(memory_format=torch.channels_last)  # type: ignore[call-overload]
 
     # Freeze everything outside the head; the backbone also stays in eval mode
     # so its BatchNorm running stats remain at the full model's values.
-    for p in model.backbone.parameters():
-        p.requires_grad_(False)
-    for p in model.pool.parameters():
-        p.requires_grad_(False)
+    model.requires_grad_(False)
+    model.head.requires_grad_(True)
     model.backbone.eval()
 
     if not args.no_reinit_head:
@@ -1995,9 +1855,9 @@ def run_dfr(args: argparse.Namespace) -> None:
                 module.reset_parameters()  # type: ignore[operator]
         logger.info("reinitialised head for a fresh DFR fit")
 
+    total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    logger.info("trainable params: %d | frozen params: %d", trainable, frozen)
+    logger.info("trainable params: %d | frozen params: %d", trainable, total - trainable)
 
     # Indexed under its own cache name so it never collides with the main
     # train/val file indexes.
@@ -2008,7 +1868,7 @@ def run_dfr(args: argparse.Namespace) -> None:
         invalidate_cache=args.invalidate_cache,
     )
     dataset = RotationPairDataset(
-        base=ImageLoader(files=files),
+        files=files,
         transform=build_train_transform(mean=mean, std=std),
     )
     logger.info("DFR reweighting set: %d files -> %d pairs", len(files), len(dataset))
@@ -2069,17 +1929,7 @@ def run_export(args: argparse.Namespace) -> None:
         "input_name": INPUT_NAME,
         "output_name": OUTPUT_NAME,
     }
-    logger.info(
-        "loaded %s (epoch=%s, weights=%s, pooling=%s)",
-        args.checkpoint,
-        meta.get("epoch"),
-        args.weights,
-        meta.get("pooling"),
-    )
-
-    out_path: Path = args.out
-    if out_path is None:
-        out_path = args.checkpoint.with_suffix(".onnx")
+    out_path = args.out or args.checkpoint.with_suffix(".onnx")
 
     export_onnx(
         model=model,
