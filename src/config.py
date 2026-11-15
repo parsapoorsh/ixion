@@ -7,8 +7,8 @@ directory exists.
 """
 
 from dataclasses import dataclass
-from pathlib import Path
 from logging import getLogger
+from pathlib import Path
 
 logger = getLogger(__name__)
 
@@ -17,7 +17,7 @@ logger = getLogger(__name__)
 class DatasetSpec:
     """A train/val pair on disk.
 
-    mean/std are not pinned here - ``stats.get_stats`` samples the train
+    mean/std are not pinned here - ``core.compute_stats`` samples the train
     split and caches the result. Set them explicitly to pin to fixed
     constants (e.g. ImageNet stats) and skip the scan.
     """
@@ -86,5 +86,6 @@ def build_datasets(root: Path) -> list[DatasetSpec]:
     return result
 
 
-# Stats sampling constants live in constants.py (datasets.py needs them and
-# can't import config without a cycle). See constants.STATS_SAMPLE_FRACTION.
+# Stats sampling constants live in constants.py so the data pipeline and
+# model code can share them without import cycles. See
+# constants.STATS_SAMPLE_FRACTION.
