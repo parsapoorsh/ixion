@@ -684,10 +684,8 @@ def train(
 
     # A resume keeps the LR schedule from the checkpoint; the run still stops
     # after --epochs, which may cut the cosine short.
-    requested_total_steps = steps_per_epoch * epochs
-    requested_warmup_steps = int(steps_per_epoch * warmup_epochs)
-    total_steps = requested_total_steps
-    warmup_steps = requested_warmup_steps
+    total_steps = requested_total_steps = steps_per_epoch * epochs
+    warmup_steps = requested_warmup_steps = int(steps_per_epoch * warmup_epochs)
 
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
