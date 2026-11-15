@@ -28,11 +28,20 @@ train loop (would multiply step cost); ranking is eval/infer only.
 ```
 src/
   cli.py         — argument parser for `train` / `finetune` / `validate` /
-                   `browse` / `gradcam` / `dfr` / `export`; imports core
+                   `browse` / `gradcam` / `dfr` / `export`; imports dispatch
                    only after parsing so `--help` stays torch-free
-  core.py        — data pipeline, transforms, stats, training loop, checkpoint
-                   loading, validation, four-view inference, GradCAM, browse,
-                   DFR head retraining, ONNX export, and the subcommand bodies
+  dispatch.py    — command -> run_* handler table and logging setup
+  stats.py       — dataset mean/std computation with JSON caching
+  data.py        — transform factories, RotationPairDataset, build_dataset,
+                   build_loader
+  checkpoint.py  — checkpoint load/save and weight-name selection
+  inference.py   — four-view scoring (RotationVote, predict_rotations)
+  training.py    — SAM training loop, LR schedule, compile check, run_train
+  validation.py  — group-4 validation and run_validate
+  dfr.py         — DFR head retraining and run_dfr
+  gradcam.py     — GradCAM / guided-GradCAM rendering and run_gradcam
+  browse.py      — tkinter browser worker and run_browse
+  export.py      — ONNX export and run_export
   constants.py   — paths, sizes, rotation list; no imports from config so models can depend on it safely
   config.py      — DatasetSpec + build_dataset_specs(root) for the ImageNet+COCO layout
   model/
@@ -114,7 +123,7 @@ venv/bin/python src/cli.py export \
 
 ## Key design decisions
 
-- **From scratch by default.** `core.train` builds the backbone with `pretrained=False`.
+- **From scratch by default.** `training.train` builds the backbone with `pretrained=False`.
   `--pretrain` opts into timm's ImageNet weights, and the `finetune` subcommand is a
   short-schedule preset over them (see Running).
 - **SAM is the optimizer.** Every step wraps AdamW in Sharpness-Aware
@@ -134,8 +143,8 @@ venv/bin/python src/cli.py export \
 - **Stats caching.** Dataset mean/std are computed once, cached to `cache/stats_*.json`,
   and reloaded on subsequent runs. Use `--invalidate-cache` to force a recompute.
 - **Checkpoint portability.** `torch.compile` wraps parameters under `_orig_mod.*`;
-  `save_checkpoint` unwraps to the raw module before saving so checkpoints load
-  correctly whether or not `torch.compile` is active.
+  `checkpoint.save_checkpoint` unwraps to the raw module before saving so checkpoints
+  load correctly whether or not `torch.compile` is active.
 
 ## Dataset paths
 
