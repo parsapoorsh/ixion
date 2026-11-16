@@ -37,17 +37,15 @@ DEFAULT_ROTATIONS = (0, 90, 180, 270)
 DEFAULT_INPUT_NAME = "input"
 DEFAULT_OUTPUT_NAME = "logits"
 
-IMAGE_EXTS = frozenset(
-    {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-        ".bmp",
-        ".tiff",
-        ".tif",
-    }
-)
+IMAGE_EXTS = frozenset({
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".tiff",
+    ".tif",
+})
 
 
 @dataclass(frozen=True)
@@ -69,7 +67,7 @@ class Metadata:
     def from_dict(cls, data: dict[str, object]) -> Metadata:
         """Build metadata from ONNX strings, JSON values, or defaults."""
 
-        def numbers(key: str, default: tuple[float | int, ...]) -> tuple:
+        def list_numbers(key: str, default: tuple[float | int, ...]) -> tuple:
             value = data.get(key, default)
             if isinstance(value, str):
                 try:
@@ -87,11 +85,11 @@ class Metadata:
             return default if value is None else str(value)
 
         return cls(
-            mean=tuple(float(value) for value in numbers("mean", DEFAULT_MEAN)),
-            std=tuple(float(value) for value in numbers("std", DEFAULT_STD)),
+            mean=tuple(float(value) for value in list_numbers("mean", DEFAULT_MEAN)),
+            std=tuple(float(value) for value in list_numbers("std", DEFAULT_STD)),
             input_size=number("input_size", DEFAULT_INPUT_SIZE),
             resize_size=number("resize_size", DEFAULT_RESIZE_SIZE),
-            rotations=tuple(int(value) for value in numbers("rotations", DEFAULT_ROTATIONS)),
+            rotations=tuple(int(value) for value in list_numbers("rotations", DEFAULT_ROTATIONS)),
             input_name=text("input_name", DEFAULT_INPUT_NAME),
             output_name=text("output_name", DEFAULT_OUTPUT_NAME),
             epoch=text("epoch", "") or None,
@@ -191,8 +189,8 @@ class OnnxRotationModel:
             logits=[float(value) for value in logits],
         )
 
+    @staticmethod
     def correct(
-        self,
         image: Image.Image,
         prediction: Prediction,
         abstain_margin: float | None = None,
@@ -269,21 +267,18 @@ def main(
         )
 
         if as_json:
-            print(
-                json.dumps(
-                    {
-                        "path": str(path),
-                        "best_deg": prediction.best_deg,
-                        "margin": round(prediction.margin, 6),
-                        "probs": {
-                            str(degrees): round(probability, 6)
-                            for degrees, probability in prediction.probs.items()
-                        },
-                        "abstained": abstained,
-                        "output": str(output_path) if output_path is not None else None,
-                    }
-                )
-            )
+            data = {
+                "path": str(path),
+                "best_deg": prediction.best_deg,
+                "margin": round(prediction.margin, 6),
+                "probs": {
+                    str(degrees): round(probability, 6)
+                    for degrees, probability in prediction.probs.items()
+                },
+                "abstained": abstained,
+                "output": str(output_path) if output_path is not None else None,
+            }
+            print(json.dumps(data))
         else:
             status = "ABSTAIN" if abstained else f"correction {prediction.best_deg}°"
             confidence = max(prediction.probs.values())
