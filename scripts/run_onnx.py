@@ -59,9 +59,6 @@ class Metadata:
     rotations: tuple[int, ...] = DEFAULT_ROTATIONS
     input_name: str = DEFAULT_INPUT_NAME
     output_name: str = DEFAULT_OUTPUT_NAME
-    epoch: str | None = None
-    weights: str | None = None
-    pooling: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> Metadata:
@@ -92,9 +89,6 @@ class Metadata:
             rotations=tuple(int(value) for value in list_numbers("rotations", DEFAULT_ROTATIONS)),
             input_name=text("input_name", DEFAULT_INPUT_NAME),
             output_name=text("output_name", DEFAULT_OUTPUT_NAME),
-            epoch=text("epoch", "") or None,
-            weights=text("weights", "") or None,
-            pooling=text("pooling", "") or None,
         )
 
 
