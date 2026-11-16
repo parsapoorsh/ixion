@@ -7,6 +7,17 @@ The model is an EfficientNet-B0 with one output neuron, `P(upright)`, trained
 with binary cross-entropy on four views of each image: one upright and three
 rotated.
 
+## Performance
+
+Measured with `scripts/bench_onnx.py` on the exported 224 px four-view model:
+
+| Hardware | Provider | Throughput | Latency (mean) |
+|---|---|---|---|
+| NVIDIA RTX 5060 Ti | CUDA | 235 images/s (939 views/s) | 4.26 ms |
+| Intel Core i5-13600K | CPU | 77 images/s (309 views/s) | 12.95 ms |
+
+Timing includes preprocessing and inference; image decoding is excluded.
+
 ## Requirements
 
 Python 3.12+ and the packages in `requirements.txt`.
