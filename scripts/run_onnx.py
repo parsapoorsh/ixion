@@ -10,15 +10,11 @@ CLI:
     python run_onnx.py model.onnx photo.jpg --abstain-margin 0.15 --json
 
 Import:
-    from run_onnx import load_model
+    from run_onnx import OnnxRotationModel
 
-    model = load_model("model.onnx")
+    model = OnnxRotationModel("model.onnx")
     prediction = model.predict(image)
     corrected = model.correct(image, prediction)
-
-Metadata comes from the ONNX file (``metadata_props``). A sidecar JSON with
-the same stem is used as a fallback, and hardcoded constants are used when
-neither exists.
 """
 
 from __future__ import annotations
@@ -26,8 +22,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
 
 import numpy as np
 import onnxruntime as ort
@@ -54,7 +50,58 @@ IMAGE_EXTS = frozenset(
 )
 
 
-class Prediction(TypedDict):
+@dataclass(frozen=True)
+class Metadata:
+    """Preprocessing and provenance values stored with the model."""
+
+    mean: tuple[float, ...] = DEFAULT_MEAN
+    std: tuple[float, ...] = DEFAULT_STD
+    input_size: int = DEFAULT_INPUT_SIZE
+    resize_size: int = DEFAULT_RESIZE_SIZE
+    rotations: tuple[int, ...] = DEFAULT_ROTATIONS
+    input_name: str = DEFAULT_INPUT_NAME
+    output_name: str = DEFAULT_OUTPUT_NAME
+    epoch: str | None = None
+    weights: str | None = None
+    pooling: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> Metadata:
+        """Build metadata from ONNX strings, JSON values, or defaults."""
+
+        def numbers(key: str, default: tuple[float | int, ...]) -> tuple:
+            value = data.get(key, default)
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    return default
+            return tuple(value) if isinstance(value, (list, tuple)) else default
+
+        def number(key: str, default: int) -> int:
+            value = data.get(key, default)
+            return int(value) if isinstance(value, (int, str)) else default
+
+        def text(key: str, default: str) -> str:
+            value = data.get(key)
+            return default if value is None else str(value)
+
+        return cls(
+            mean=tuple(float(value) for value in numbers("mean", DEFAULT_MEAN)),
+            std=tuple(float(value) for value in numbers("std", DEFAULT_STD)),
+            input_size=number("input_size", DEFAULT_INPUT_SIZE),
+            resize_size=number("resize_size", DEFAULT_RESIZE_SIZE),
+            rotations=tuple(int(value) for value in numbers("rotations", DEFAULT_ROTATIONS)),
+            input_name=text("input_name", DEFAULT_INPUT_NAME),
+            output_name=text("output_name", DEFAULT_OUTPUT_NAME),
+            epoch=text("epoch", "") or None,
+            weights=text("weights", "") or None,
+            pooling=text("pooling", "") or None,
+        )
+
+
+@dataclass(frozen=True)
+class Prediction:
     probs: dict[int, float]
     best_deg: int
     margin: float
@@ -70,88 +117,61 @@ class OnnxRotationModel:
             str(self.model_path),
             providers=["CPUExecutionProvider"],
         )
-        self.metadata = self.read_metadata()
-        self.mean = np.asarray(self.read_list("mean", DEFAULT_MEAN), dtype=np.float32)
-        self.std = np.asarray(self.read_list("std", DEFAULT_STD), dtype=np.float32)
-        self.input_size = self.read_int("input_size", DEFAULT_INPUT_SIZE)
-        self.resize_size = self.read_int("resize_size", DEFAULT_RESIZE_SIZE)
-        self.rotations = [int(value) for value in self.read_list("rotations", DEFAULT_ROTATIONS)]
-        self.input_name = self.read_str("input_name", DEFAULT_INPUT_NAME)
-        self.output_name = self.read_str("output_name", DEFAULT_OUTPUT_NAME)
 
-    def read_metadata(self) -> dict[str, object]:
-        """Sidecar JSON first, embedded ONNX metadata second (it wins)."""
-        metadata: dict[str, object] = {}
+        # Priority: embedded ONNX metadata > sidecar JSON > defaults.
+        data: dict[str, object] = {}
         sidecar = self.model_path.with_suffix(".json")
         if sidecar.exists():
             try:
-                data = json.loads(sidecar.read_text())
+                loaded = json.loads(sidecar.read_text())
             except (OSError, json.JSONDecodeError):
-                data = None
-            if isinstance(data, dict):
-                metadata.update(data)
+                loaded = None
+            data = loaded if isinstance(loaded, dict) else {}
+        data.update(self.session.get_modelmeta().custom_metadata_map or {})
+        self.metadata = Metadata.from_dict(data)
 
-        embedded = self.session.get_modelmeta().custom_metadata_map or {}
-        metadata.update(embedded)
-        return metadata
-
-    def read_list(self, key: str, default: tuple) -> list:
-        value = self.metadata.get(key, default)
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError:
-                return list(default)
-        return list(value) if isinstance(value, (list, tuple)) else list(default)
-
-    def read_int(self, key: str, default: int) -> int:
-        value = self.metadata.get(key, default)
-        if not isinstance(value, (int, str)):
-            return default
-        try:
-            return int(value)
-        except ValueError:
-            return default
-
-    def read_str(self, key: str, default: str) -> str:
-        value = self.metadata.get(key)
-        return default if value is None else str(value)
+        self.mean = np.asarray(self.metadata.mean, dtype=np.float32)
+        self.std = np.asarray(self.metadata.std, dtype=np.float32)
 
     def preprocess(self, image: Image.Image) -> np.ndarray:
         """Resize shorter side, center crop, normalize, return CHW float32."""
+        meta = self.metadata
         image = ImageOps.exif_transpose(image).convert("RGB")
+
         width, height = image.size
-        scale = self.resize_size / min(width, height)
+        scale = meta.resize_size / min(width, height)
         if scale != 1.0:
             image = image.resize(
                 (round(width * scale), round(height * scale)),
                 Image.Resampling.BILINEAR,
             )
 
-        left = (image.width - self.input_size) // 2
-        top = (image.height - self.input_size) // 2
+        left = (image.width - meta.input_size) // 2
+        top = (image.height - meta.input_size) // 2
         image = image.crop(
             (
                 left,
                 top,
-                left + self.input_size,
-                top + self.input_size,
+                left + meta.input_size,
+                top + meta.input_size,
             )
         )
+
         array = np.asarray(image, dtype=np.float32) / 255.0
         array = (array - self.mean) / self.std
         return array.transpose(2, 0, 1)
 
     def predict(self, image: Image.Image) -> Prediction:
-        """Score the four rotations and return probabilities and the best view."""
+        """Score every rotation and return probabilities and the best view."""
+        meta = self.metadata
         chw = self.preprocess(image)
         views = [
-            np.rot90(chw, k=(deg // 90) % 4, axes=(1, 2))
-            for deg in self.rotations
+            np.rot90(chw, k=(degrees // 90) % 4, axes=(1, 2))
+            for degrees in meta.rotations
         ]
         batch = np.stack(views).astype(np.float32)
         logits = np.asarray(
-            self.session.run([self.output_name], {self.input_name: batch})[0],
+            self.session.run([meta.output_name], {meta.input_name: batch})[0],
             dtype=np.float64,
         ).reshape(-1)
 
@@ -161,15 +181,15 @@ class OnnxRotationModel:
         top1 = int(order[-1])
         top2 = int(order[-2])
 
-        return {
-            "probs": {
-                deg: float(probability)
-                for deg, probability in zip(self.rotations, probabilities, strict=True)
+        return Prediction(
+            probs={
+                degrees: float(probability)
+                for degrees, probability in zip(meta.rotations, probabilities, strict=True)
             },
-            "best_deg": self.rotations[top1],
-            "margin": float(probabilities[top1] - probabilities[top2]),
-            "logits": [float(value) for value in logits],
-        }
+            best_deg=meta.rotations[top1],
+            margin=float(probabilities[top1] - probabilities[top2]),
+            logits=[float(value) for value in logits],
+        )
 
     def correct(
         self,
@@ -179,17 +199,13 @@ class OnnxRotationModel:
     ) -> Image.Image:
         """Return the image rotated upright, or unchanged when it abstains."""
         rgb = ImageOps.exif_transpose(image).convert("RGB")
-        if abstain_margin is not None and prediction["margin"] < abstain_margin:
+        if abstain_margin is not None and prediction.margin < abstain_margin:
             return rgb
-        return rgb.rotate(prediction["best_deg"], expand=True)
-
-
-def load_model(model_path: str | Path) -> OnnxRotationModel:
-    """Load an exported ONNX model and its preprocessing metadata."""
-    return OnnxRotationModel(model_path)
+        return rgb.rotate(prediction.best_deg, expand=True)
 
 
 def collect_images(paths: list[Path]) -> list[Path]:
+    """Expand files and directories into a flat image list."""
     images: list[Path] = []
     for path in paths:
         if path.is_dir():
@@ -217,7 +233,70 @@ def save_corrected(image: Image.Image, path: Path, output_dir: Path) -> Path:
     return output_path
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    model_path: Path,
+    images: list[Path],
+    output_dir: Path | None = None,
+    abstain_margin: float | None = None,
+    as_json: bool = False,
+) -> int:
+    model = OnnxRotationModel(model_path)
+    paths = collect_images(images)
+    if not paths:
+        print("no images found", file=sys.stderr)
+        return 1
+
+    print(
+        f"model: {model_path}"
+        f" (epoch={model.metadata.epoch}, weights={model.metadata.weights})",
+        file=sys.stderr,
+    )
+
+    for path in paths:
+        try:
+            with Image.open(path) as image:
+                prediction = model.predict(image)
+                corrected = model.correct(image, prediction, abstain_margin)
+        except (OSError, ValueError) as exc:
+            print(f"{path}: ERROR: {exc}", file=sys.stderr)
+            continue
+
+        abstained = abstain_margin is not None and prediction.margin < abstain_margin
+        output_path = (
+            save_corrected(corrected, path, output_dir)
+            if output_dir is not None
+            else None
+        )
+
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "path": str(path),
+                        "best_deg": prediction.best_deg,
+                        "margin": round(prediction.margin, 6),
+                        "probs": {
+                            str(degrees): round(probability, 6)
+                            for degrees, probability in prediction.probs.items()
+                        },
+                        "abstained": abstained,
+                        "output": str(output_path) if output_path is not None else None,
+                    }
+                )
+            )
+        else:
+            status = "ABSTAIN" if abstained else f"correction {prediction.best_deg}°"
+            confidence = max(prediction.probs.values())
+            suffix = f" -> {output_path}" if output_path is not None else ""
+            print(
+                f"{path}: {status}  margin={prediction.margin:.3f}"
+                f"  conf={confidence:.3f}{suffix}"
+            )
+
+    return 0
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Score four rotations of photos and correct them upright.",
     )
@@ -245,67 +324,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print one JSON object per image",
     )
-    args = parser.parse_args(argv)
-
-    model = load_model(args.model)
-    paths = collect_images(args.images)
-    if not paths:
-        print("no images found", file=sys.stderr)
-        return 1
-
-    epoch = model.metadata.get("epoch")
-    weights = model.metadata.get("weights")
-    print(
-        f"model: {args.model} (epoch={epoch}, weights={weights})",
-        file=sys.stderr,
+    args = parser.parse_args()
+    raise SystemExit(
+        main(
+            args.model,
+            args.images,
+            args.output_dir,
+            args.abstain_margin,
+            args.json,
+        )
     )
-
-    for path in paths:
-        try:
-            with Image.open(path) as image:
-                prediction = model.predict(image)
-                corrected = model.correct(image, prediction, args.abstain_margin)
-        except (OSError, ValueError) as exc:
-            print(f"{path}: ERROR: {exc}", file=sys.stderr)
-            continue
-
-        abstained = (
-            args.abstain_margin is not None
-            and prediction["margin"] < args.abstain_margin
-        )
-        output_path = (
-            save_corrected(corrected, path, args.output_dir)
-            if args.output_dir is not None
-            else None
-        )
-
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "path": str(path),
-                        "best_deg": prediction["best_deg"],
-                        "margin": round(prediction["margin"], 6),
-                        "probs": {
-                            str(deg): round(probability, 6)
-                            for deg, probability in prediction["probs"].items()
-                        },
-                        "abstained": abstained,
-                        "output": str(output_path) if output_path is not None else None,
-                    }
-                )
-            )
-        else:
-            status = "ABSTAIN" if abstained else f"correction {prediction['best_deg']}°"
-            confidence = max(prediction["probs"].values())
-            suffix = f" -> {output_path}" if output_path is not None else ""
-            print(
-                f"{path}: {status}  margin={prediction['margin']:.3f}"
-                f"  conf={confidence:.3f}{suffix}"
-            )
-
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

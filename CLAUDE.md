@@ -134,7 +134,7 @@ python scripts/run_onnx.py \
 metadata from the ONNX file, falls back to a sidecar `.json` with the same stem,
 then to built-in ImageNet defaults. Pass `--output-dir` to write corrected
 images, `--abstain-margin` to leave ambiguous images alone, or `--json` for
-machine-readable output. Its `load_model` function is importable.
+machine-readable output. `OnnxRotationModel` is importable for reuse.
 
 ## Key design decisions
 
