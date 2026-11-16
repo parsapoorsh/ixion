@@ -31,6 +31,7 @@ def export_onnx(
     opset: int,
     dynamo: bool,
     verify: bool,
+    metadata: dict[str, str],
 ) -> None:
     """Trace ``model`` to ONNX with a dynamic batch axis."""
     dummy = torch.randn(1, 3, constants.INPUT_SIZE, constants.INPUT_SIZE, device=device)
@@ -79,6 +80,21 @@ def export_onnx(
     if not out_path.is_file():
         raise RuntimeError(f"ONNX export produced no file at {out_path}")
 
+    # ONNX custom metadata is a string map; the standalone runner reads it
+    # through onnxruntime, so the model is self-describing without a sidecar.
+    try:
+        import onnx
+    except ImportError as exc:
+        raise RuntimeError("embedding ONNX metadata requires the onnx package (pip install onnx)") from exc
+
+    model_proto = onnx.load(out_path)
+    for key, value in metadata.items():
+        entry = model_proto.metadata_props.add()
+        entry.key = key
+        entry.value = value
+    onnx.save(model_proto, out_path)
+    logger.info("embedded %d metadata entries", len(metadata))
+
     if verify:
         try:
             import onnxruntime as ort
@@ -110,21 +126,27 @@ def run_export(args: argparse.Namespace) -> None:
         device,
         weights=args.weights,
     )
-    meta = {
+    epoch = payload.get("epoch")
+    epoch_label = epoch if epoch is not None else "unknown"
+    out_path = args.out or (
+        constants.CHECKPOINT_DIR / "onnx" / f"ixion-efficientnet-e{epoch_label}-{args.weights}.onnx"
+    )
+    metadata = {
         "checkpoint": str(args.checkpoint),
-        "epoch": payload.get("epoch"),
+        "epoch": str(epoch_label),
         "weights": args.weights,
-        "pooling": payload.get("pooling", "avg"),
-        "pretrained": payload.get("pretrained"),
-        "mean": list(mean),
-        "std": list(std),
-        "input_size": constants.INPUT_SIZE,
-        "resize_size": constants.RESIZE_SIZE,
-        "rotations": list(constants.ROTATIONS),
+        "pooling": str(payload.get("pooling", "avg")),
+        "pretrained": str(payload.get("pretrained")),
+        "mean": json.dumps(list(mean)),
+        "std": json.dumps(list(std)),
+        "input_size": str(constants.INPUT_SIZE),
+        "resize_size": str(constants.RESIZE_SIZE),
+        "rotations": json.dumps(list(constants.ROTATIONS)),
         "input_name": INPUT_NAME,
         "output_name": OUTPUT_NAME,
+        "opset": str(args.opset),
+        "dynamo": str(args.dynamo).lower(),
     }
-    out_path = args.out or args.checkpoint.with_suffix(".onnx")
 
     export_onnx(
         model=model,
@@ -133,15 +155,7 @@ def run_export(args: argparse.Namespace) -> None:
         opset=args.opset,
         dynamo=args.dynamo,
         verify=args.verify,
+        metadata=metadata,
     )
 
-    meta_path = out_path.with_suffix(".json")
-    meta_payload = {
-        **meta,
-        "onnx": str(out_path),
-        "opset": args.opset,
-        "dynamo": args.dynamo,
-    }
-    meta_path.write_text(json.dumps(meta_payload, indent=2) + "\n")
-    logger.info("wrote metadata %s", meta_path)
     logger.info("done: %s (%.1f MiB)", out_path, out_path.stat().st_size / (1024 * 1024))

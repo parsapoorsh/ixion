@@ -375,7 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=None,
-        help="output .onnx path (default: checkpoint with .onnx suffix)",
+        help=("output .onnx path (default: checkpoints/onnx/ixion-efficientnet-e{N}-{weights}.onnx)"),
     )
     add_optional_device(export_parser, default="cpu", help_text="torch device used for the export trace")
     export_parser.add_argument(
