@@ -53,6 +53,8 @@ src/
     image_io.py  — PIL open with JXL plugin + EXIF orientation + truncated-image tolerance
     index.py     — recursive file scanner with compressed JSON cache
     logsetup.py  — timestamped log file + stderr handler
+scripts/
+  run_onnx.py    — standalone ONNX inference CLI + importable `load_model`
 ```
 
 ## Running
@@ -117,9 +119,22 @@ venv/bin/python src/cli.py dfr \
 **ONNX export:**
 ```
 venv/bin/python src/cli.py export \
-    --checkpoint checkpoints/epoch_010.pt \
-    --out checkpoints/epoch_010.onnx
+    --checkpoint checkpoints/epoch_008.pt
 ```
+Writes `checkpoints/onnx/ixion-efficientnet-e8-ema.onnx` by default. The
+normalization, input size, rotation list, and input/output names are embedded
+in the ONNX file itself.
+
+**Run an ONNX model standalone:**
+```
+python scripts/run_onnx.py \
+    checkpoints/onnx/ixion-efficientnet-e8-ema.onnx photo.jpg
+```
+`scripts/run_onnx.py` needs only `onnxruntime`, `numpy`, and `Pillow`. It reads
+metadata from the ONNX file, falls back to a sidecar `.json` with the same stem,
+then to built-in ImageNet defaults. Pass `--output-dir` to write corrected
+images, `--abstain-margin` to leave ambiguous images alone, or `--json` for
+machine-readable output. Its `load_model` function is importable.
 
 ## Key design decisions
 
@@ -160,5 +175,5 @@ layout under it:
 
 ## Dependencies
 
-Python 3.12, PyTorch 2.11 + CUDA 12.8, torchvision, timm, Pillow + pillow-jxl-plugin.
-See `requirements.txt` for pinned versions.
+Python 3.12, PyTorch 2.11 + CUDA 12.8, torchvision, timm, Pillow + pillow-jxl-plugin,
+onnx + onnxruntime. See `requirements.txt` for pinned versions.
