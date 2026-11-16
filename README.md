@@ -35,7 +35,7 @@ Only directories that exist are used; at least one corpus must be present.
 python src/cli.py train \
     --data-root /path/to/datasets \
     --device cuda --batch-size 256 --num-workers 8 \
-    --prefetch-factor 4 --seed 0
+    --prefetch-factor 2 --seed 67
 ```
 
 `finetune` is a short preset over ImageNet-pretrained weights:
@@ -43,8 +43,8 @@ python src/cli.py train \
 ```bash
 python src/cli.py finetune \
     --data-root /path/to/datasets \
-    --device cuda --batch-size 256 --num-workers 8 \
-    --prefetch-factor 4 --seed 0
+    --device cuda:0 --batch-size 24 --num-workers 10 \
+    --prefetch-factor 4 --seed 67 --epoch 8
 ```
 
 Training uses SAM over AdamW and `torch.compile` when the build environment
