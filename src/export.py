@@ -132,7 +132,6 @@ def run_export(args: argparse.Namespace) -> None:
         constants.CHECKPOINT_DIR / "onnx" / f"ixion-efficientnet-e{epoch_label}-{args.weights}.onnx"
     )
     metadata = {
-        "checkpoint": str(args.checkpoint),
         "epoch": str(epoch_label),
         "weights": args.weights,
         "pooling": str(payload.get("pooling", "avg")),
