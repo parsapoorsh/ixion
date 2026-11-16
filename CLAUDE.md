@@ -54,7 +54,8 @@ src/
     index.py     — recursive file scanner with compressed JSON cache
     logsetup.py  — timestamped log file + stderr handler
 scripts/
-  run_onnx.py    — standalone ONNX inference CLI + importable `load_model`
+  run_onnx.py    — standalone ONNX inference CLI + importable `OnnxRotationModel`
+  bench_onnx.py  — ONNX throughput benchmark for CPU/CUDA providers
 ```
 
 ## Running
@@ -135,6 +136,16 @@ metadata from the ONNX file, falls back to a sidecar `.json` with the same stem,
 then to built-in ImageNet defaults. Pass `--output-dir` to write corrected
 images, `--abstain-margin` to leave ambiguous images alone, or `--json` for
 machine-readable output. `OnnxRotationModel` is importable for reuse.
+
+**Benchmark ONNX throughput:**
+```
+python scripts/bench_onnx.py \
+    checkpoints/onnx/ixion-efficientnet-e8-ema.onnx \
+    /path/to/photos --device cuda
+```
+Timing covers preprocessing and inference, not image decode. The CUDA path
+needs `onnxruntime-gpu` (the default `onnxruntime` package is CPU-only); use
+`--device cpu` to compare.
 
 ## Key design decisions
 
