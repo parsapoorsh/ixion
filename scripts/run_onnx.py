@@ -101,9 +101,16 @@ class Metadata:
 @dataclass(frozen=True)
 class Prediction:
     probs: dict[int, float]
-    best_deg: int
-    margin: float
     logits: list[float]
+
+    @property
+    def best_deg(self) -> int:
+        return max(self.probs, key=self.probs.__getitem__)
+
+    @property
+    def margin(self) -> float:
+        top_two = sorted(self.probs.values(), reverse=True)[:2]
+        return top_two[0] - top_two[1]
 
 
 class OnnxRotationModel:
@@ -179,17 +186,12 @@ class OnnxRotationModel:
 
         shifted = logits - logits.max()
         probabilities = np.exp(shifted) / np.exp(shifted).sum()
-        order = np.argsort(probabilities)
-        top1 = int(order[-1])
-        top2 = int(order[-2])
 
         return Prediction(
             probs={
                 degrees: float(probability)
                 for degrees, probability in zip(meta.rotations, probabilities, strict=True)
             },
-            best_deg=meta.rotations[top1],
-            margin=float(probabilities[top1] - probabilities[top2]),
             logits=[float(value) for value in logits],
         )
 
